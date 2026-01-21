@@ -211,6 +211,7 @@ function LiveMeetingContent() {
     endMeeting,
     startMeeting,
     setRecording,
+    addRecording,
   } = useMeetingStore();
   const { loadTasksForMeeting, completeTask, reopenTask } = useTaskStore();
   const { speakers, loadSpeakers, createSpeaker } = useSpeakerStore();
@@ -357,6 +358,11 @@ function LiveMeetingContent() {
         // Track transcription usage for statistics
         addTranscriptionUsage(result.duration || 0);
 
+        // Save audio recording to IndexedDB
+        if (meetingId) {
+          await addRecording(meetingId, blob, blob.type, (result.duration || 0) * 1000, [segment.id]);
+        }
+
         // Detect decisions and questions in the new segment
         const decision = detectDecision(segment);
         if (decision) {
@@ -373,7 +379,7 @@ function LiveMeetingContent() {
     } finally {
       setIsProcessing(false);
     }
-  }, [toggleRecording, settings.openaiApiKey, settings.language, addTranscriptSegment]);
+  }, [toggleRecording, settings.openaiApiKey, settings.language, addTranscriptSegment, addRecording, meetingId, addTranscriptionUsage]);
 
   // Handle end meeting
   const handleEndMeeting = useCallback(async () => {
