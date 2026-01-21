@@ -124,33 +124,46 @@ async function checkAndMigrateDatabase(): Promise<void> {
   });
 }
 
-// Singleton database instance
-export const db = new AuroraDatabase();
+// Singleton with lazy initialization for SSR compatibility
+let _db: AuroraDatabase | null = null;
+let _dbReady: Promise<void> | null = null;
 
 // Track recordings currently being migrated to prevent race conditions
 const migratingRecordings = new Set<string>();
 
-// Promise that resolves when database is ready (opened and upgraded)
-export const dbReady: Promise<void> = (async () => {
+// Getter for DB - only creates instance in browser
+function getDb(): AuroraDatabase {
+  if (typeof window === 'undefined') {
+    throw new Error('Database is only available in browser environment');
+  }
+  if (!_db) {
+    _db = new AuroraDatabase();
+  }
+  return _db;
+}
+
+// Initialize database (only called in browser)
+async function initializeDatabase(): Promise<void> {
   // First, check and migrate if needed
   await checkAndMigrateDatabase();
 
+  const dbInstance = getDb();
   try {
-    await db.open();
-    console.log('Database opened successfully, version:', db.verno);
+    await dbInstance.open();
+    console.log('Database opened successfully, version:', dbInstance.verno);
   } catch (err) {
     console.error('Failed to open database:', err);
     // If any error, try to delete and recreate
     console.warn('Database error, attempting recovery by deleting and recreating...');
     try {
-      db.close();
+      dbInstance.close();
     } catch (closeErr) {
       console.warn('Failed to close database during recovery:', closeErr);
     }
 
     // Fix: Wrap recovery operations in try-catch with proper logging
     try {
-      await db.delete();
+      await dbInstance.delete();
       console.log('Database deleted successfully during recovery');
     } catch (deleteErr) {
       console.error('Failed to delete database during recovery:', deleteErr);
@@ -158,14 +171,39 @@ export const dbReady: Promise<void> = (async () => {
     }
 
     try {
-      await db.open();
+      await dbInstance.open();
       console.log('Database recreated successfully');
     } catch (reopenErr) {
       console.error('Failed to reopen database during recovery:', reopenErr);
       throw new Error(`Database recovery failed: could not reopen database - ${reopenErr}`);
     }
   }
-})();
+}
+
+// Getter for dbReady - only initializes in browser
+function getDbReady(): Promise<void> {
+  // SSR Guard: Return resolved promise during server-side rendering
+  if (typeof window === 'undefined') {
+    return Promise.resolve();
+  }
+  if (!_dbReady) {
+    _dbReady = initializeDatabase();
+  }
+  return _dbReady;
+}
+
+// Export db with Proxy for backward compatibility
+// This allows existing code to use `db.meetings`, `db.tasks`, etc.
+export const db = new Proxy({} as AuroraDatabase, {
+  get(_, prop) {
+    return getDb()[prop as keyof AuroraDatabase];
+  }
+});
+
+// Export dbReady as a getter that returns the promise
+export const dbReady: Promise<void> = typeof window === 'undefined'
+  ? Promise.resolve()
+  : (getDbReady() as Promise<void>);
 
 // Helper functions for date serialization
 export function serializeMeeting(meeting: Meeting): StoredMeeting {
