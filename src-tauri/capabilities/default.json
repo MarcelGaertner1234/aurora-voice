@@ -21,6 +21,7 @@
     "dialog:allow-open",
     "dialog:allow-message",
     "dialog:allow-ask",
+    "dialog:allow-save",
     {
       "identifier": "fs:allow-read-dir",
       "allow": [
