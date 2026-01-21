@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, useEffect } from 'react';
 import { AudioRecorder } from '@/lib/audio/recorder';
 import { useAppStore } from '@/lib/store/settings';
 
@@ -9,6 +9,12 @@ export function useRecorder() {
   const [isSupported, setIsSupported] = useState(true);
 
   const { setRecordingState, setAudioLevel, setError } = useAppStore();
+
+  // Fix: Ref für stabilen Callback - verhindert Stale Closure Problem
+  const setAudioLevelRef = useRef(setAudioLevel);
+  useEffect(() => {
+    setAudioLevelRef.current = setAudioLevel;
+  }, [setAudioLevel]);
 
   // Fix H11: Added setIsSupported to dependencies (state setter is stable but for completeness)
   const checkSupport = useCallback(() => {
@@ -29,7 +35,9 @@ export function useRecorder() {
 
     try {
       recorderRef.current = new AudioRecorder({
-        onAudioLevel: setAudioLevel,
+        onAudioLevel: (level) => {
+          setAudioLevelRef.current(level);
+        },
         onError: (error) => {
           setError(error.message);
           setRecordingState('idle');
@@ -52,7 +60,7 @@ export function useRecorder() {
 
       setRecordingState('idle');
     }
-  }, [checkSupport, setAudioLevel, setError, setRecordingState]);
+  }, [checkSupport, setError, setRecordingState]);
 
   const stopRecording = useCallback(async (): Promise<Blob | null> => {
     if (!recorderRef.current) return null;

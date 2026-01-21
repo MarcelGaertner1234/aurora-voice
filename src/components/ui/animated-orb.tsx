@@ -52,7 +52,7 @@ export function AnimatedOrb({ state, audioLevel = 0, onClick, disabled, size = '
   const sizes = sizeConfig[size];
 
   // Scale based on audio level when recording
-  const scale = isRecording ? 1 + audioLevel * 0.15 : 1;
+  const scale = isRecording ? 1 + audioLevel * 0.8 : 1;
 
   return (
     <div className={`flex flex-col items-center ${size === 'sm' ? 'gap-2' : 'gap-6'}`}>
@@ -67,7 +67,7 @@ export function AnimatedOrb({ state, audioLevel = 0, onClick, disabled, size = '
           disabled:cursor-not-allowed disabled:opacity-50
         `}
         animate={{ scale }}
-        transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+        transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}
         whileHover={!isProcessing && !isRecording ? { scale: 1.05 } : undefined}
         whileTap={!isProcessing ? { scale: 0.95 } : undefined}
       >
@@ -111,11 +111,12 @@ export function AnimatedOrb({ state, audioLevel = 0, onClick, disabled, size = '
           <motion.div
             className="absolute inset-0 rounded-full border-4 border-white/30"
             animate={{
-              scale: [1, 1 + audioLevel * 0.2, 1],
-              opacity: [0.5, 0.8, 0.5],
+              scale: 1 + audioLevel * 1.2,
+              opacity: 0.3 + audioLevel * 0.5,
             }}
             transition={{
-              duration: 0.3,
+              type: 'tween',
+              duration: 0.1,
               ease: 'easeOut',
             }}
           />

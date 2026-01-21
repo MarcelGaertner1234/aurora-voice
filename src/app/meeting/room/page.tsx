@@ -187,6 +187,7 @@ function MeetingRoomContent() {
     setError,
     addRecentProject,
     addTranscriptionUsage,
+    audioLevel,
   } = useAppStore();
 
   const { loadTasksForMeeting, setTaskStatus, updateTaskNotes, updateTask, addTaskAttachment, removeTaskAttachment } = useTaskStore();
@@ -1546,7 +1547,7 @@ _Erstellt mit Aurora Voice_`;
                 <div className="flex items-center gap-4">
                   <AnimatedOrb
                     state={recordingState}
-                    audioLevel={0}
+                    audioLevel={audioLevel}
                     onClick={handleFollowUpRecording}
                     disabled={isProcessing || !settings.openaiApiKey}
                     size="sm"

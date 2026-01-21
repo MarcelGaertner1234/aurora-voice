@@ -128,9 +128,15 @@ export class AudioRecorder {
 
       // Set up audio context for level analysis
       this.audioContext = new AudioContext();
+
+      // Resume AudioContext if suspended (required by many browsers)
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 256;
-      this.analyser.smoothingTimeConstant = 0.8;
+      this.analyser.smoothingTimeConstant = 0.3;
 
       const source = this.audioContext.createMediaStreamSource(this.stream);
       source.connect(this.analyser);
@@ -197,17 +203,29 @@ export class AudioRecorder {
   private startLevelMonitoring(): void {
     if (!this.analyser) return;
 
-    const dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+    // Time domain statt frequency - besser für Sprache
+    const dataArray = new Uint8Array(this.analyser.fftSize);
 
     const updateLevel = () => {
       if (!this.analyser) return;
 
-      this.analyser.getByteFrequencyData(dataArray);
+      // Time domain data: Werte um 128 = Stille, Abweichung = Amplitude
+      this.analyser.getByteTimeDomainData(dataArray);
 
-      // Calculate average level
-      const sum = dataArray.reduce((a, b) => a + b, 0);
-      const average = sum / dataArray.length;
-      const normalizedLevel = Math.min(average / 128, 1);
+      // Peak-Detektion: Maximale Abweichung von 128 finden
+      let maxDeviation = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const deviation = Math.abs(dataArray[i] - 128);
+        if (deviation > maxDeviation) {
+          maxDeviation = deviation;
+        }
+      }
+
+      // Normalisieren auf 0-1 (max deviation ist 128)
+      const rawLevel = maxDeviation / 128;
+
+      // Verstärkung: Werte mit Faktor 3 multiplizieren und auf 1 begrenzen
+      const normalizedLevel = Math.min(rawLevel * 3, 1);
 
       this.onAudioLevel?.(normalizedLevel);
 
