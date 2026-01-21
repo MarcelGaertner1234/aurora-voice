@@ -44,9 +44,9 @@ import {
   PanelLeftClose,
   PanelLeft,
 } from 'lucide-react';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { open as shellOpen } from '@tauri-apps/plugin-shell';
-import { readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile, exists, writeTextFile } from '@tauri-apps/plugin-fs';
 import { join } from '@tauri-apps/api/path';
 import { useMeetingStore } from '@/lib/store/meeting-store';
 import { useProjectStore } from '@/lib/store/project-store';
@@ -62,10 +62,10 @@ import { GlassCard } from '@/components/ui/glass-card';
 import { AnimatedOrb } from '@/components/ui/animated-orb';
 import { StreamingText } from '@/components/output/streaming-text';
 import { AudioPlayerCompact } from '@/components/ui/audio-player';
-import type { MeetingStatus, MeetingRecording, MeetingQuestion, MeetingDecision } from '@/types/meeting';
+import type { Meeting, MeetingStatus, MeetingRecording, MeetingQuestion, MeetingDecision } from '@/types/meeting';
 import type { AgentMessage, SelectedContextItem } from '@/types/agent';
 import { AGENT_QUICK_ACTIONS } from '@/types/agent';
-import { streamAgentResponse } from '@/lib/ai/agent';
+import { streamAgentResponse, ContentSearchResult } from '@/lib/ai/agent';
 import { webSearchManager } from '@/lib/research/web-search';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -231,6 +231,9 @@ function MeetingRoomContent() {
   const agentAbortControllerRef = useRef<AbortController | null>(null);
   const agentChatEndRef = useRef<HTMLDivElement>(null);
 
+  // Related meetings state (Improvement 3: Meeting history for project context)
+  const [relatedMeetings, setRelatedMeetings] = useState<Meeting[]>([]);
+
   // Context sidebar state
   const [selectedContextItem, setSelectedContextItem] = useState<SelectedContextItem | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -332,6 +335,25 @@ function MeetingRoomContent() {
       });
     }
   }, [projectPath, projectContext, isIndexing, getOrIndexProject]);
+
+  // Load related meetings when projectPath is set (Improvement 3: Meeting history)
+  useEffect(() => {
+    if (projectPath && currentMeeting) {
+      const loadRelatedMeetings = async () => {
+        await loadMeetings();
+        const { meetings } = useMeetingStore.getState();
+        // Filter meetings that have the same projectPath (excluding current meeting)
+        const related = (meetings || [])
+          .filter(m => m.projectPath === projectPath && m.id !== currentMeeting.id)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+          .slice(0, 10); // Limit to 10 most recent
+        setRelatedMeetings(related);
+      };
+      loadRelatedMeetings();
+    } else {
+      setRelatedMeetings([]);
+    }
+  }, [projectPath, currentMeeting?.id, loadMeetings]);
 
   // Update edit title when meeting loads
   useEffect(() => {
@@ -840,6 +862,10 @@ function MeetingRoomContent() {
         // Save audio recording to IndexedDB
         await addRecording(meetingId, audioBlob, audioBlob.type, durationMs);
 
+        // Reload recordings immediately to ensure UI shows the recording
+        const updatedRecordings = await loadRecordings(meetingId);
+        setMeetingRecordings(updatedRecordings);
+
         // End meeting and update currentMeeting
         setRecordingState('enriching');
         setEnrichedContent('');
@@ -986,7 +1012,7 @@ _Erstellt mit Aurora Voice_`;
   }, [currentMeeting, meetingTasks]);
 
   // Download as markdown (Fix 8: Validate content before downloading)
-  const downloadMarkdown = useCallback(() => {
+  const downloadMarkdown = useCallback(async () => {
     if (!currentMeeting) return;
 
     // Fix 8: Check if there's meaningful content to download
@@ -1006,39 +1032,26 @@ _Erstellt mit Aurora Voice_`;
       return;
     }
 
-    // Build summary sections
-    const keyPointsSection = summary?.keyPoints?.length
-      ? `\n### Wichtige Punkte\n\n${summary.keyPoints.map(p => `- ${p}`).join('\n')}\n`
-      : '';
-    const decisionsSection = summary?.decisions?.length
-      ? `\n### Entscheidungen\n\n${summary.decisions.map(d => `- **${d.text}**${d.context ? ` (${d.context})` : ''}`).join('\n')}\n`
-      : '';
-    const questionsSection = summary?.openQuestions?.length
-      ? `\n### Offene Fragen\n\n${summary.openQuestions.map(q => `- ${q.text}${q.answered ? ' ✓' : ''}`).join('\n')}\n`
-      : '';
+    // Use getMeetingContent for consistent output
+    const content = getMeetingContent();
 
-    const content = `# ${currentMeeting.title}
+    // Use Tauri save dialog
+    const defaultFilename = `meeting-${currentMeeting.title.toLowerCase().replace(/\s+/g, '-')}.md`;
 
-**Datum:** ${format(new Date(currentMeeting.createdAt), 'dd. MMMM yyyy, HH:mm', { locale: de })}
-**Status:** ${currentMeeting.status}
+    try {
+      const filePath = await save({
+        title: 'Meeting exportieren',
+        defaultPath: defaultFilename,
+        filters: [{ name: 'Markdown', extensions: ['md'] }],
+      });
 
-## Zusammenfassung
-
-${summary?.overview || 'Keine Übersicht verfügbar'}
-${keyPointsSection}${decisionsSection}${questionsSection}
-## Transkript
-
-${currentMeeting.transcript?.fullText || 'Kein Transkript verfügbar'}
-`;
-
-    const blob = new Blob([content], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `meeting-${currentMeeting.title.toLowerCase().replace(/\s+/g, '-')}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [currentMeeting, setError]);
+      if (filePath) {
+        await writeTextFile(filePath, content);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Fehler beim Speichern der Datei');
+    }
+  }, [currentMeeting, setError, getMeetingContent]);
 
   // Auto-scroll agent chat to bottom when new messages arrive
   useEffect(() => {
@@ -1083,6 +1096,7 @@ ${currentMeeting.transcript?.fullText || 'Kein Transkript verfügbar'}
           tasks: meetingTasks,
           settings,
           projectContext,
+          relatedMeetings, // Improvement 3: Meeting history for project context
           signal: abortController.signal,
           onCompleteTask: async (taskId) => {
             await setTaskStatus(taskId, 'completed');
@@ -1127,6 +1141,62 @@ ${currentMeeting.transcript?.fullText || 'Kein Transkript verfügbar'}
               return '';
             }
           },
+          onSearchProjectContent: async (query, filePattern, maxResults = 10): Promise<ContentSearchResult[]> => {
+            if (!projectContext) return [];
+            try {
+              const results: ContentSearchResult[] = [];
+              const searchRegex = new RegExp(query, 'gi');
+
+              // Filter files by pattern if provided
+              let filesToSearch = projectContext.files.filter(f => f.type === 'code' || f.type === 'doc');
+              if (filePattern) {
+                // Simple glob-to-regex conversion
+                const patternRegex = new RegExp(
+                  filePattern
+                    .replace(/\./g, '\\.')
+                    .replace(/\*/g, '.*')
+                    .replace(/\?/g, '.'),
+                  'i'
+                );
+                filesToSearch = filesToSearch.filter(f => patternRegex.test(f.name) || patternRegex.test(f.path));
+              }
+
+              // Search through files
+              for (const file of filesToSearch.slice(0, 50)) { // Limit to 50 files
+                if (results.length >= maxResults) break;
+
+                try {
+                  const fullPath = await join(projectContext.rootPath, file.path);
+                  const content = await readTextFile(fullPath);
+                  const lines = content.split('\n');
+
+                  for (let i = 0; i < lines.length; i++) {
+                    if (results.length >= maxResults) break;
+                    if (searchRegex.test(lines[i])) {
+                      // Get context (1 line before and after)
+                      const contextLines: string[] = [];
+                      if (i > 0) contextLines.push(`${i}: ${lines[i - 1]}`);
+                      contextLines.push(`${i + 1}: ${lines[i]}`);
+                      if (i < lines.length - 1) contextLines.push(`${i + 2}: ${lines[i + 1]}`);
+
+                      results.push({
+                        filePath: file.path,
+                        lineNumber: i + 1,
+                        lineContent: lines[i].trim(),
+                        context: contextLines.join('\n'),
+                      });
+                    }
+                  }
+                } catch {
+                  // Skip files that can't be read
+                }
+              }
+
+              return results;
+            } catch {
+              return [];
+            }
+          },
           onWebSearch: async (query) => {
             const results = await webSearchManager.search(query);
             return results;
@@ -1166,6 +1236,7 @@ ${currentMeeting.transcript?.fullText || 'Kein Transkript verfügbar'}
     meetingTasks,
     settings,
     projectContext,
+    relatedMeetings,
     isAgentStreaming,
     setTaskStatus,
     updateTaskNotes,

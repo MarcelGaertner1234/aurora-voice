@@ -237,33 +237,75 @@ export function deserializeSpeaker(stored: StoredSpeaker): SpeakerProfile {
 }
 
 export async function serializeRecording(recording: MeetingRecording, meetingId: string): Promise<StoredRecording> {
-  const audioData = await recording.blob.arrayBuffer();
-  return {
-    id: recording.id,
-    meetingId,
-    mimeType: recording.mimeType,
-    duration: recording.duration,
-    createdAt: recording.createdAt.toISOString(),
-    audioData,
-    transcriptSegmentIds: recording.transcriptSegmentIds,
-  };
+  try {
+    const audioData = await recording.blob.arrayBuffer();
+    if (!audioData || audioData.byteLength === 0) {
+      throw new Error('ArrayBuffer conversion resulted in empty data');
+    }
+    console.log('Serialized recording:', {
+      id: recording.id,
+      originalBlobSize: recording.blob.size,
+      arrayBufferSize: audioData.byteLength,
+    });
+    return {
+      id: recording.id,
+      meetingId,
+      mimeType: recording.mimeType,
+      duration: recording.duration,
+      createdAt: recording.createdAt.toISOString(),
+      audioData,
+      transcriptSegmentIds: recording.transcriptSegmentIds,
+    };
+  } catch (err) {
+    console.error('Failed to serialize recording:', err);
+    throw err;
+  }
 }
 
 export async function deserializeRecording(stored: StoredRecording): Promise<MeetingRecording & { meetingId: string }> {
+  console.log('Deserializing recording:', {
+    id: stored.id,
+    audioDataSize: stored.audioData?.byteLength,
+    mimeType: stored.mimeType,
+  });
+
+  if (!stored.audioData || stored.audioData.byteLength === 0) {
+    throw new Error(`No audioData in stored recording ${stored.id}`);
+  }
+
   const blob = new Blob([stored.audioData], { type: stored.mimeType });
 
+  if (blob.size === 0) {
+    throw new Error(`Created blob has zero size for recording ${stored.id}`);
+  }
+
   // Create Data URL for WebKit-compatible playback (avoids createObjectURL issues in Tauri/Safari)
+  // FileReader with timeout to handle large blobs
   const dataUrl = await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`FileReader timeout after 30s for recording ${stored.id}`));
+    }, 30000);
+
     const reader = new FileReader();
     reader.onloadend = () => {
+      clearTimeout(timeout);
       if (reader.result) {
         resolve(reader.result as string);
       } else {
-        reject(new Error('FileReader returned null result'));
+        reject(new Error(`FileReader returned null result for recording ${stored.id}`));
       }
     };
-    reader.onerror = () => reject(reader.error || new Error('FileReader error'));
+    reader.onerror = () => {
+      clearTimeout(timeout);
+      reject(reader.error || new Error(`FileReader error for recording ${stored.id}`));
+    };
     reader.readAsDataURL(blob);
+  });
+
+  console.log('Deserialized recording successfully:', {
+    id: stored.id,
+    blobSize: blob.size,
+    dataUrlLength: dataUrl.length,
   });
 
   return {
@@ -449,81 +491,107 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
   await dbReady;
   const stored = await db.recordings.where('meetingId').equals(meetingId).toArray();
 
+  // Debug logging: Raw recordings from DB
+  console.log('Raw recordings from DB:', {
+    meetingId,
+    count: stored.length,
+    recordings: stored.map(r => ({
+      id: r.id,
+      hasAudioData: !!r.audioData,
+      audioDataSize: r.audioData?.byteLength,
+      hasBlobLegacy: !!r.blob,
+    })),
+  });
+
   const recordings = await Promise.all(
     stored.map(async (record) => {
-      // Migration: Convert old blob format to new audioData format
-      if (record.blob && !record.audioData) {
-        // Prevent race condition: skip if already being migrated
-        if (migratingRecordings.has(record.id)) {
-          console.log('Recording migration already in progress, skipping:', record.id);
+      try {
+        // Migration: Convert old blob format to new audioData format
+        if (record.blob && !record.audioData) {
+          // Prevent race condition: skip if already being migrated
+          if (migratingRecordings.has(record.id)) {
+            console.log('Recording migration already in progress, skipping:', record.id);
+            return null;
+          }
+
+          migratingRecordings.add(record.id);
+          console.log('Migrating recording from blob to audioData format:', record.id);
+          try {
+            const audioData = await record.blob.arrayBuffer();
+            await db.recordings.update(record.id, {
+              audioData,
+              blob: undefined
+            });
+            record.audioData = audioData;
+            record.blob = undefined;
+            console.log('Recording migrated successfully:', record.id);
+          } catch (err) {
+            console.error('Failed to migrate recording:', record.id, err);
+            return null;
+          } finally {
+            migratingRecordings.delete(record.id);
+          }
+        }
+
+        // Skip recordings without audioData (couldn't be migrated)
+        if (!record.audioData) {
+          console.warn('Skipping recording without audioData:', record.id);
           return null;
         }
 
-        migratingRecordings.add(record.id);
-        console.log('Migrating recording from blob to audioData format:', record.id);
-        try {
-          const audioData = await record.blob.arrayBuffer();
-          await db.recordings.update(record.id, {
-            audioData,
-            blob: undefined
-          });
-          record.audioData = audioData;
-          record.blob = undefined;
-          console.log('Recording migrated successfully:', record.id);
-        } catch (err) {
-          console.error('Failed to migrate recording:', record.id, err);
+        const recording = await deserializeRecording(record);
+
+        if (!recording.blob || recording.blob.size === 0) {
+          console.warn('Skipping recording with invalid blob:', recording.id);
           return null;
-        } finally {
-          migratingRecordings.delete(record.id);
         }
-      }
 
-      // Skip recordings without audioData (couldn't be migrated)
-      if (!record.audioData) {
-        console.warn('Skipping recording without audioData:', record.id);
+        // Check if browser can play this format
+        const audio = document.createElement('audio');
+        const mimeType = recording.mimeType || recording.blob.type;
+        const canPlay = audio.canPlayType(mimeType) !== '';
+
+        if (!canPlay) {
+          try {
+            console.log('Converting old recording for Safari playback:', recording.id);
+            const converted = await convertToPlayableFormat(recording.blob);
+
+            // Update in-memory recording
+            recording.blob = converted.blob;
+            recording.mimeType = converted.mimeType;
+
+            // Persist converted version to IndexedDB (with new audioData format)
+            const newAudioData = await converted.blob.arrayBuffer();
+            await db.recordings.update(record.id, {
+              audioData: newAudioData,
+              mimeType: converted.mimeType,
+            });
+
+            console.log('Recording converted and saved:', recording.id);
+          } catch (err) {
+            console.error('Failed to convert recording:', recording.id, err);
+            // Return original even if conversion fails (user can delete)
+          }
+        }
+
+        return recording;
+      } catch (err) {
+        console.error('Failed to process recording:', record.id, err);
         return null;
       }
-
-      const recording = await deserializeRecording(record);
-
-      if (!recording.blob || recording.blob.size === 0) {
-        console.warn('Skipping recording with invalid blob:', recording.id);
-        return null;
-      }
-
-      // Check if browser can play this format
-      const audio = document.createElement('audio');
-      const mimeType = recording.mimeType || recording.blob.type;
-      const canPlay = audio.canPlayType(mimeType) !== '';
-
-      if (!canPlay) {
-        try {
-          console.log('Converting old recording for Safari playback:', recording.id);
-          const converted = await convertToPlayableFormat(recording.blob);
-
-          // Update in-memory recording
-          recording.blob = converted.blob;
-          recording.mimeType = converted.mimeType;
-
-          // Persist converted version to IndexedDB (with new audioData format)
-          const newAudioData = await converted.blob.arrayBuffer();
-          await db.recordings.update(record.id, {
-            audioData: newAudioData,
-            mimeType: converted.mimeType,
-          });
-
-          console.log('Recording converted and saved:', recording.id);
-        } catch (err) {
-          console.error('Failed to convert recording:', recording.id, err);
-          // Return original even if conversion fails (user can delete)
-        }
-      }
-
-      return recording;
     })
   );
 
-  return recordings.filter((r): r is (MeetingRecording & { meetingId: string }) => r !== null);
+  const validRecordings = recordings.filter((r): r is (MeetingRecording & { meetingId: string }) => r !== null);
+
+  console.log('Recording loading complete:', {
+    meetingId,
+    total: stored.length,
+    valid: validRecordings.length,
+    filtered: stored.length - validRecordings.length,
+  });
+
+  return validRecordings;
 }
 
 export async function getRecordingById(id: string): Promise<(MeetingRecording & { meetingId: string }) | undefined> {
