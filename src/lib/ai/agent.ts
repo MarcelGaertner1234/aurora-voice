@@ -13,12 +13,21 @@ import type { AgentMessage, AgentToolCall } from '@/types/agent';
 import type { WebSearchResult } from '@/types/research';
 import { buildAgentSystemPrompt } from './agent-prompts';
 
+// Content search result for searchProjectContent tool
+export interface ContentSearchResult {
+  filePath: string;
+  lineNumber: number;
+  lineContent: string;
+  context?: string; // Surrounding lines for context
+}
+
 export interface AgentOptions {
   messages: AgentMessage[];
   meeting: Meeting;
   tasks: Task[];
   settings: Settings;
   projectContext?: ProjectContext | null;
+  relatedMeetings?: Meeting[];  // Meetings with same projectPath for context (Improvement 3)
   signal?: AbortSignal;
   // Callbacks for tool execution
   onCompleteTask?: (taskId: string) => Promise<void>;
@@ -27,6 +36,7 @@ export interface AgentOptions {
   onMarkQuestionAnswered?: (questionId: string) => Promise<void>;
   onAddDecision?: (text: string, assigneeName?: string) => Promise<void>;
   onReadProjectFile?: (filePath: string) => Promise<string>;
+  onSearchProjectContent?: (query: string, filePattern?: string, maxResults?: number) => Promise<ContentSearchResult[]>;
   onWebSearch?: (query: string) => Promise<WebSearchResult[]>;
 }
 
@@ -91,6 +101,11 @@ const toolSchemas = {
   })),
   searchProjectFiles: zodSchema(z.object({
     query: z.string().describe('Suchbegriff für Dateinamen oder Pfade'),
+  })),
+  searchProjectContent: zodSchema(z.object({
+    query: z.string().describe('Suchbegriff oder Regex für Dateiinhalt'),
+    filePattern: z.string().optional().describe('Dateimuster z.B. "*.tsx" oder "*.ts"'),
+    maxResults: z.number().optional().default(10).describe('Maximale Anzahl Ergebnisse'),
   })),
   getMeetingSummary: zodSchema(z.object({})),
   getOpenTasks: zodSchema(z.object({})),
@@ -205,6 +220,24 @@ function buildAgentTools(options: AgentOptions) {
           .map(f => `- \`${f.path}\` (${f.type}, ${formatFileSize(f.size)})`)
           .join('\n');
         return `Gefundene Dateien für "${query}":\n${result}${matches.length > 15 ? `\n\n... und ${matches.length - 15} weitere` : ''}`;
+      },
+    });
+  }
+
+  // Search project content tool (grep-like search) - Improvement 2
+  if (options.onSearchProjectContent && options.projectContext) {
+    tools.searchProjectContent = tool({
+      description: 'Sucht nach Textinhalt in Projekt-Dateien (wie grep). Nutze dies um Code-Stellen, Funktionsdefinitionen oder bestimmte Texte zu finden.',
+      inputSchema: toolSchemas.searchProjectContent,
+      execute: async ({ query, filePattern, maxResults }) => {
+        const results = await options.onSearchProjectContent!(query, filePattern, maxResults || 10);
+        if (!results || results.length === 0) {
+          return `Keine Treffer gefunden für: "${query}"${filePattern ? ` in ${filePattern}` : ''}`;
+        }
+        const formatted = results.map(r =>
+          `**${r.filePath}:${r.lineNumber}**\n\`\`\`\n${r.lineContent}\n\`\`\`${r.context ? `\nKontext:\n${r.context}` : ''}`
+        ).join('\n\n');
+        return `## Suchergebnisse für "${query}"${filePattern ? ` in ${filePattern}` : ''}\n\n${formatted}`;
       },
     });
   }
@@ -372,6 +405,21 @@ async function executeToolCall(
         return `Gefundene Dateien für "${query}":\n${result}${matches.length > 15 ? `\n\n... und ${matches.length - 15} weitere` : ''}`;
       }
 
+      case 'searchProjectContent': {
+        const { query, filePattern, maxResults } = args as { query: string; filePattern?: string; maxResults?: number };
+        if (options.onSearchProjectContent) {
+          const results = await options.onSearchProjectContent(query, filePattern, maxResults || 10);
+          if (!results || results.length === 0) {
+            return `Keine Treffer gefunden für: "${query}"${filePattern ? ` in ${filePattern}` : ''}`;
+          }
+          const formatted = results.map(r =>
+            `**${r.filePath}:${r.lineNumber}**\n\`\`\`\n${r.lineContent}\n\`\`\`${r.context ? `\nKontext:\n${r.context}` : ''}`
+          ).join('\n\n');
+          return `## Suchergebnisse für "${query}"${filePattern ? ` in ${filePattern}` : ''}\n\n${formatted}`;
+        }
+        return 'Content-Suche ist nicht verfügbar.';
+      }
+
       case 'getMeetingSummary': {
         const meeting = options.meeting;
         if (!meeting.summary) {
@@ -453,7 +501,7 @@ export async function streamAgentResponse(
   onToolCall?: (toolCall: AgentToolCall) => void
 ): Promise<AgentStreamResult> {
   const model = getModel(options.settings);
-  const systemPrompt = buildAgentSystemPrompt(options.meeting, options.tasks, options.projectContext);
+  const systemPrompt = buildAgentSystemPrompt(options.meeting, options.tasks, options.projectContext, options.relatedMeetings);
   const tools = buildAgentTools(options);
 
   // Convert agent messages to AI SDK format

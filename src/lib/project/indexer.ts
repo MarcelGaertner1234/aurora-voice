@@ -8,6 +8,8 @@ import type {
   ProjectFile,
   ProjectFileType,
   IndexSettings,
+  PackageJsonData,
+  ProjectAnalysis,
 } from '@/types/project';
 import {
   CODE_EXTENSIONS,
@@ -174,6 +176,181 @@ async function getProjectName(rootPath: string): Promise<string> {
   return basename(rootPath);
 }
 
+// Read README.md content (max 2000 characters)
+async function getReadmeContent(rootPath: string): Promise<string | undefined> {
+  const readmeNames = ['README.md', 'readme.md', 'Readme.md', 'README.MD', 'README'];
+
+  for (const name of readmeNames) {
+    try {
+      const readmePath = await join(rootPath, name);
+      const content = await readTextFile(readmePath);
+      // Limit to 2000 characters
+      if (content.length > 2000) {
+        return content.slice(0, 2000) + '\n\n[... README gekürzt ...]';
+      }
+      return content;
+    } catch {
+      // Try next name
+    }
+  }
+  return undefined;
+}
+
+// Parse package.json for AI context
+async function getPackageJsonData(rootPath: string): Promise<PackageJsonData | undefined> {
+  try {
+    const packageJsonPath = await join(rootPath, 'package.json');
+    const content = await readTextFile(packageJsonPath);
+    const packageJson = JSON.parse(content);
+
+    return {
+      name: packageJson.name,
+      version: packageJson.version,
+      description: packageJson.description,
+      dependencies: packageJson.dependencies,
+      devDependencies: packageJson.devDependencies,
+      scripts: packageJson.scripts,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+// Generate quick project analysis without AI (Improvement 4)
+function generateQuickAnalysis(files: ProjectFile[], name: string): ProjectAnalysis {
+  const codeFiles = files.filter(f => f.type === 'code');
+  const configFiles = files.filter(f => f.type === 'config');
+
+  // Detect tech stack from config files
+  const techStack: string[] = [];
+  const configNames = configFiles.map(f => f.name.toLowerCase());
+
+  if (configNames.includes('package.json')) techStack.push('Node.js');
+  if (configNames.includes('tsconfig.json')) techStack.push('TypeScript');
+  if (configNames.includes('next.config.js') || configNames.includes('next.config.ts') || configNames.includes('next.config.mjs')) techStack.push('Next.js');
+  if (configNames.includes('vite.config.ts') || configNames.includes('vite.config.js')) techStack.push('Vite');
+  if (configNames.includes('tailwind.config.js') || configNames.includes('tailwind.config.ts')) techStack.push('Tailwind CSS');
+  if (configNames.includes('cargo.toml')) techStack.push('Rust');
+  if (configNames.includes('go.mod')) techStack.push('Go');
+  if (configNames.includes('requirements.txt') || configNames.includes('pyproject.toml')) techStack.push('Python');
+  if (configNames.includes('docker-compose.yml') || configNames.includes('dockerfile')) techStack.push('Docker');
+
+  // Detect React/Vue from file extensions
+  const extensions = new Set(codeFiles.map(f => f.extension));
+  if (extensions.has('.tsx') || extensions.has('.jsx')) techStack.push('React');
+  if (extensions.has('.vue')) techStack.push('Vue');
+  if (extensions.has('.svelte')) techStack.push('Svelte');
+
+  // Identify key files
+  const keyFiles = [
+    ...configFiles.filter(f => ['package.json', 'tsconfig.json', 'cargo.toml', 'go.mod'].includes(f.name)),
+    ...codeFiles.filter(f => f.name.match(/^(index|main|app|server)\.(ts|tsx|js|jsx|py|go|rs)$/)),
+  ].slice(0, 10).map(f => f.path);
+
+  // Detect architecture from folder structure
+  const folders = new Set(
+    codeFiles.map(f => {
+      const parts = f.path.split('/');
+      return parts.length > 1 ? parts[0] : '';
+    }).filter(Boolean)
+  );
+
+  let architecture = 'Standard-Projektstruktur';
+  if (folders.has('src') && folders.has('pages')) {
+    architecture = 'Next.js App-Struktur';
+  } else if (folders.has('src') && folders.has('app')) {
+    architecture = 'Next.js 13+ App Router Struktur';
+  } else if (folders.has('components') && folders.has('lib')) {
+    architecture = 'Komponenten-basierte Architektur';
+  } else if (folders.has('cmd') && folders.has('pkg')) {
+    architecture = 'Go Standard Layout';
+  }
+
+  // Detect conventions
+  const conventions: string[] = [];
+  const hasKebabCase = codeFiles.some(f => f.name.match(/^[a-z]+-[a-z]+/));
+  const hasPascalCase = codeFiles.some(f => f.name.match(/^[A-Z][a-z]+[A-Z]/));
+  if (hasKebabCase) conventions.push('Kebab-case Dateinamen');
+  if (hasPascalCase) conventions.push('PascalCase Komponenten');
+  if (folders.has('components')) conventions.push('Komponenten in /components');
+  if (folders.has('lib')) conventions.push('Utilities in /lib');
+
+  return {
+    summary: `${name} ist ein ${[...new Set(techStack)].slice(0, 3).join('/')} Projekt mit ${files.length} Dateien.`,
+    architecture,
+    keyFiles,
+    techStack: [...new Set(techStack)],
+    conventions: conventions.slice(0, 5),
+    generatedAt: new Date(),
+  };
+}
+
+// Generate directory tree structure (max 3 levels deep)
+function generateDirectoryTree(files: ProjectFile[], maxDepth = 3): string {
+  // Build directory structure from files
+  const dirs = new Set<string>();
+  const filesByDir = new Map<string, string[]>();
+
+  for (const file of files) {
+    const parts = file.path.split('/');
+    const fileName = parts.pop()!;
+    const dirPath = parts.join('/');
+
+    // Add all parent directories
+    let currentPath = '';
+    for (let i = 0; i < Math.min(parts.length, maxDepth); i++) {
+      currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
+      dirs.add(currentPath);
+    }
+
+    // Add file to its directory (only if within max depth)
+    if (parts.length <= maxDepth) {
+      const existing = filesByDir.get(dirPath) || [];
+      existing.push(fileName);
+      filesByDir.set(dirPath, existing);
+    }
+  }
+
+  // Sort directories
+  const sortedDirs = Array.from(dirs).sort();
+
+  // Build tree string
+  const lines: string[] = [];
+  const rootFiles = filesByDir.get('') || [];
+
+  // Add root level files
+  for (const file of rootFiles.slice(0, 5)) {
+    lines.push(`├── ${file}`);
+  }
+  if (rootFiles.length > 5) {
+    lines.push(`├── ... (+${rootFiles.length - 5} Dateien)`);
+  }
+
+  // Add directories
+  for (const dir of sortedDirs) {
+    const depth = dir.split('/').length;
+    const indent = '│   '.repeat(depth - 1);
+    const dirName = dir.split('/').pop()!;
+    lines.push(`${indent}├── ${dirName}/`);
+
+    // Add files in this directory
+    const dirFiles = filesByDir.get(dir) || [];
+    for (const file of dirFiles.slice(0, 3)) {
+      lines.push(`${indent}│   ├── ${file}`);
+    }
+    if (dirFiles.length > 3) {
+      lines.push(`${indent}│   └── ... (+${dirFiles.length - 3} Dateien)`);
+    }
+  }
+
+  // Limit total lines
+  if (lines.length > 30) {
+    return lines.slice(0, 30).join('\n') + '\n... (weitere Verzeichnisse)';
+  }
+
+  return lines.join('\n') || '(Keine Verzeichnisstruktur)';
+}
+
 // Recursive directory scanning
 async function scanDirectory(
   dirPath: string,
@@ -306,12 +483,31 @@ export async function indexProject(
     return a.path.localeCompare(b.path);
   });
 
+  // Read extended context for AI (Improvement 1, 4, 5)
+  onProgress?.(files.length, 'Lese README und package.json...');
+  const [readmeContent, packageJson] = await Promise.all([
+    getReadmeContent(rootPath),
+    getPackageJsonData(rootPath),
+  ]);
+
+  // Generate directory tree
+  const directoryStructure = generateDirectoryTree(files);
+
+  // Generate quick project analysis (Improvement 4)
+  onProgress?.(files.length, 'Analysiere Projekt...');
+  const analysis = generateQuickAnalysis(files, name);
+
   const context: ProjectContext = {
     rootPath,
     name,
     files,
     totalFiles: files.length,
     indexedAt: new Date(),
+    // Extended context for AI
+    readmeContent,
+    packageJson,
+    directoryStructure,
+    analysis,
   };
 
   // Persist context to .aurora folder if enabled

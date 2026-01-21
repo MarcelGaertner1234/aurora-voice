@@ -3,3 +3,4 @@
 
 export * from './indexer';
 export * from './matcher';
+export * from './analyzer';

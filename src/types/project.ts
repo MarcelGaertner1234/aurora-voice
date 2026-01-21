@@ -13,12 +13,28 @@ export interface ProjectFile {
   snippet?: string;       // First ~500 characters for context
 }
 
+// Parsed package.json data for AI context
+export interface PackageJsonData {
+  name?: string;
+  version?: string;
+  description?: string;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  scripts?: Record<string, string>;
+}
+
 export interface ProjectContext {
   rootPath: string;       // Absolute path to project root
   name: string;           // Project name (from package.json or folder name)
   files: ProjectFile[];   // Indexed files
   totalFiles: number;     // Total number of files
   indexedAt: Date;        // When the index was created
+
+  // Extended context for AI (Improvements 1, 4, 5)
+  readmeContent?: string;        // README.md content (max 2000 chars)
+  packageJson?: PackageJsonData; // Parsed package.json data
+  directoryStructure?: string;   // Tree-style directory structure
+  analysis?: ProjectAnalysis;    // Quick project analysis (Improvement 4)
 }
 
 export type MatchType = 'exact' | 'partial' | 'fuzzy';

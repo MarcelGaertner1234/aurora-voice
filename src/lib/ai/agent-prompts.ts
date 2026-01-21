@@ -3,6 +3,31 @@
 import type { Meeting, MeetingDecision, MeetingQuestion } from '@/types/meeting';
 import type { Task } from '@/types/task';
 import type { ProjectContext } from '@/types/project';
+import { format } from 'date-fns';
+import { de } from 'date-fns/locale';
+
+/**
+ * Format meeting history for the system prompt (Improvement 3).
+ */
+function formatMeetingHistory(meetings: Meeting[]): string {
+  if (!meetings || meetings.length === 0) return '';
+
+  const meetingList = meetings.slice(0, 5).map(m => {
+    const date = format(new Date(m.createdAt), 'dd.MM.yyyy', { locale: de });
+    const decisionsCount = m.summary?.decisions?.length || 0;
+    const questionsCount = m.summary?.openQuestions?.length || 0;
+    const keyPoints = m.summary?.keyPoints?.slice(0, 2).join(', ') || 'Keine Kernpunkte';
+
+    return `- **${date} - ${m.title}**
+  Entscheidungen: ${decisionsCount}, Fragen: ${questionsCount}
+  Kernpunkte: ${keyPoints}`;
+  }).join('\n');
+
+  return `
+## Frühere Meetings (gleiches Projekt)
+${meetingList}
+${meetings.length > 5 ? `\n... und ${meetings.length - 5} weitere Meetings` : ''}`;
+}
 
 /**
  * Builds the system prompt for the AI agent with full meeting context.
@@ -10,7 +35,8 @@ import type { ProjectContext } from '@/types/project';
 export function buildAgentSystemPrompt(
   meeting: Meeting,
   tasks: Task[],
-  projectContext?: ProjectContext | null
+  projectContext?: ProjectContext | null,
+  relatedMeetings?: Meeting[]
 ): string {
   const openTasks = tasks.filter(t => t.status !== 'completed' && t.status !== 'cancelled');
   const completedTasks = tasks.filter(t => t.status === 'completed');
@@ -53,6 +79,7 @@ ${answeredQuestions.length > 3 ? `\n... und ${answeredQuestions.length - 3} weit
 ${meeting.transcript?.fullText ? `\`\`\`\n${truncateText(meeting.transcript.fullText, 3000)}\n\`\`\`` : 'Kein Transkript verfügbar.'}
 
 ${projectContext ? formatProjectContext(projectContext) : '**Hinweis:** Kein Projekt verknüpft. Projekt-Dateien können nicht durchsucht werden.'}
+${relatedMeetings && relatedMeetings.length > 0 ? formatMeetingHistory(relatedMeetings) : ''}
 
 ## Deine Fähigkeiten
 Du kannst dem Benutzer auf folgende Arten helfen:
@@ -60,8 +87,9 @@ Du kannst dem Benutzer auf folgende Arten helfen:
 2. **Aufgaben analysieren** und Hintergrund-Recherche durchführen
 3. **Offene Fragen klären** basierend auf dem Meeting-Kontext
 4. **Entscheidungen erklären** und deren Kontext zusammenfassen
-${projectContext ? '5. **Code-Dateien finden** und analysieren aus dem verknüpften Projekt' : ''}
+${projectContext ? '5. **Code-Dateien finden und durchsuchen** aus dem verknüpften Projekt (inkl. Inhalt-Suche)' : ''}
 6. **Internet-Recherche durchführen** mit DuckDuckGo und Wikipedia für aktuelle Informationen
+${relatedMeetings && relatedMeetings.length > 0 ? '7. **Kontext aus früheren Meetings** zum selben Projekt nutzen' : ''}
 
 ## Wichtige Hinweise
 - Antworte immer auf Deutsch
@@ -108,6 +136,41 @@ function formatQuestion(question: MeetingQuestion): string {
 }
 
 /**
+ * Format tech stack from package.json dependencies.
+ */
+function formatTechStack(packageJson?: ProjectContext['packageJson']): string {
+  if (!packageJson) return 'Nicht verfügbar (kein package.json)';
+
+  const deps = { ...packageJson.dependencies, ...packageJson.devDependencies };
+  const techStack: string[] = [];
+
+  // Detect common frameworks and libraries
+  if (deps['next']) techStack.push(`Next.js ${deps['next']}`);
+  if (deps['react']) techStack.push(`React ${deps['react']}`);
+  if (deps['vue']) techStack.push(`Vue ${deps['vue']}`);
+  if (deps['angular']) techStack.push(`Angular ${deps['angular']}`);
+  if (deps['svelte']) techStack.push('Svelte');
+  if (deps['express']) techStack.push(`Express ${deps['express']}`);
+  if (deps['fastify']) techStack.push('Fastify');
+  if (deps['typescript']) techStack.push(`TypeScript ${deps['typescript']}`);
+  if (deps['prisma'] || deps['@prisma/client']) techStack.push('Prisma');
+  if (deps['drizzle-orm']) techStack.push('Drizzle ORM');
+  if (deps['tailwindcss']) techStack.push('TailwindCSS');
+  if (deps['@emotion/react'] || deps['styled-components']) techStack.push('CSS-in-JS');
+  if (deps['zustand']) techStack.push('Zustand');
+  if (deps['redux']) techStack.push('Redux');
+  if (deps['trpc'] || deps['@trpc/server']) techStack.push('tRPC');
+  if (deps['zod']) techStack.push('Zod');
+  if (deps['jest'] || deps['vitest']) techStack.push(deps['vitest'] ? 'Vitest' : 'Jest');
+
+  if (techStack.length === 0) {
+    return 'Nicht erkannt';
+  }
+
+  return techStack.join(', ');
+}
+
+/**
  * Format project context for the system prompt.
  */
 function formatProjectContext(context: ProjectContext): string {
@@ -116,14 +179,52 @@ function formatProjectContext(context: ProjectContext): string {
   const docFiles = topFiles.filter(f => f.type === 'doc');
   const configFiles = topFiles.filter(f => f.type === 'config');
 
-  return `## Verknüpftes Projekt
+  let result = `## Verknüpftes Projekt
 **Name:** ${context.name}
 **Pfad:** ${context.rootPath}
 **Dateien:** ${context.totalFiles} insgesamt (${codeFiles.length} Code, ${docFiles.length} Docs, ${configFiles.length} Config)
 
-**Wichtige Dateien:**
-${topFiles.slice(0, 20).map(f => `- \`${f.path}\` (${f.type})`).join('\n')}
-${context.files.length > 20 ? `\n... und ${context.files.length - 20} weitere Dateien` : ''}`;
+### Tech Stack
+${formatTechStack(context.packageJson)}
+`;
+
+  // Add project analysis if available (Improvement 4)
+  if (context.analysis) {
+    result += `
+### Projekt-Analyse
+**Zusammenfassung:** ${context.analysis.summary}
+**Architektur:** ${context.analysis.architecture}
+${context.analysis.conventions.length > 0 ? `**Konventionen:** ${context.analysis.conventions.join(', ')}` : ''}
+`;
+  }
+
+  // Add README if available (Improvement 1)
+  if (context.readmeContent) {
+    result += `
+### README
+\`\`\`markdown
+${context.readmeContent.slice(0, 1500)}
+\`\`\`
+`;
+  }
+
+  // Add directory structure if available (Improvement 5)
+  if (context.directoryStructure) {
+    result += `
+### Verzeichnisstruktur
+\`\`\`
+${context.directoryStructure}
+\`\`\`
+`;
+  }
+
+  // Add important files
+  result += `
+### Wichtige Dateien
+${topFiles.slice(0, 15).map(f => `- \`${f.path}\` (${f.type})`).join('\n')}
+${context.files.length > 15 ? `\n... und ${context.files.length - 15} weitere Dateien` : ''}`;
+
+  return result;
 }
 
 /**
