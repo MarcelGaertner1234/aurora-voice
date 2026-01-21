@@ -947,6 +947,44 @@ function MeetingRoomContent() {
     }
   }, [setError]);
 
+  // Get full meeting content for copy/export
+  const getMeetingContent = useCallback(() => {
+    if (!currentMeeting) return '';
+
+    const summary = currentMeeting.summary;
+
+    // Build summary sections
+    const overviewSection = summary?.overview
+      ? `\n## Zusammenfassung\n\n${summary.overview}\n`
+      : '';
+    const keyPointsSection = summary?.keyPoints?.length
+      ? `\n### Wichtige Punkte\n\n${summary.keyPoints.map(p => `- ${p}`).join('\n')}\n`
+      : '';
+    const decisionsSection = summary?.decisions?.length
+      ? `\n### Entscheidungen\n\n${summary.decisions.map(d => `- **${d.text}**${d.context ? ` (${d.context})` : ''}`).join('\n')}\n`
+      : '';
+    const questionsSection = summary?.openQuestions?.length
+      ? `\n### Offene Fragen\n\n${summary.openQuestions.map(q => `- ${q.text}${q.answered ? ' ✓' : ''}`).join('\n')}\n`
+      : '';
+
+    // Tasks from task store
+    const tasksSection = meetingTasks.length > 0
+      ? `\n### Aufgaben\n\n${meetingTasks.map(t => `- [ ] ${t.title}${t.assigneeName ? ` @${t.assigneeName}` : ''}`).join('\n')}\n`
+      : '';
+
+    return `# ${currentMeeting.title}
+
+**Datum:** ${format(new Date(currentMeeting.createdAt), 'dd. MMMM yyyy, HH:mm', { locale: de })}
+**Status:** ${currentMeeting.status}
+${overviewSection}${keyPointsSection}${decisionsSection}${tasksSection}${questionsSection}
+## Transkript
+
+${currentMeeting.transcript?.fullText || 'Kein Transkript vorhanden.'}
+
+---
+_Erstellt mit Aurora Voice_`;
+  }, [currentMeeting, meetingTasks]);
+
   // Download as markdown (Fix 8: Validate content before downloading)
   const downloadMarkdown = useCallback(() => {
     if (!currentMeeting) return;
@@ -1304,14 +1342,14 @@ ${currentMeeting.transcript?.fullText || 'Kein Transkript verfügbar'}
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => copyToClipboard(currentMeeting.transcript?.fullText || '')}
-              disabled={!hasTranscriptContent}
+              onClick={() => copyToClipboard(getMeetingContent())}
+              disabled={!hasExportableContent}
               className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm transition-colors ${
-                hasTranscriptContent
+                hasExportableContent
                   ? 'bg-foreground/5 text-foreground-secondary hover:bg-foreground/10 hover:text-foreground'
                   : 'bg-foreground/5 text-foreground/30 cursor-not-allowed'
               }`}
-              title={hasTranscriptContent ? 'Transkript kopieren' : 'Kein Transkript vorhanden'}
+              title={hasExportableContent ? 'Meeting-Daten kopieren' : 'Kein Inhalt zum Kopieren'}
             >
               {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
               {copied ? 'Kopiert' : 'Kopieren'}
