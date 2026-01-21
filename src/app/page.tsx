@@ -50,6 +50,7 @@ export default function Home() {
     addTranscriptSegment,
     addRecording,
     setSummary,
+    setActiveRoom,
   } = useMeetingStore();
 
   const { speakers, loadSpeakers } = useSpeakerStore();
@@ -82,6 +83,11 @@ export default function Home() {
   useEffect(() => {
     loadSpeakers();
   }, [loadSpeakers]);
+
+  // Reset activeRoomId when Voice Mode page mounts to ensure new meeting creation
+  useEffect(() => {
+    setActiveRoom(null);
+  }, [setActiveRoom]);
 
   // Helper to parse structured data from AI response (Fix 7)
   const parseStructuredData = useCallback((content: string) => {
@@ -242,6 +248,8 @@ export default function Home() {
             openQuestions,
             generatedAt: new Date(),
           });
+          // Reset activeRoomId for next session
+          setActiveRoom(null);
           // Navigate to the meeting room
           router.push(`/meeting/room?id=${meetingId}`);
         }
@@ -275,6 +283,7 @@ export default function Home() {
       addRecording,
       endMeeting,
       setSummary,
+      setActiveRoom,
       router,
       parseStructuredData,
       addTranscriptionUsage,
