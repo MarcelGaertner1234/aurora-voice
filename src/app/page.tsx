@@ -48,6 +48,7 @@ export default function Home() {
     createRoomFromRecording,
     endMeeting,
     addTranscriptSegment,
+    addRecording,
     setSummary,
   } = useMeetingStore();
 
@@ -165,8 +166,9 @@ export default function Home() {
         const segmentStartTime = recordingStartTime ? Date.now() - recordingStartTime - (result.duration || 0) : 0;
         const segmentEndTime = recordingStartTime ? Date.now() - recordingStartTime : (result.duration || 0);
 
-        // Add transcript segment to meeting
+        // Add transcript segment to meeting and save audio recording
         if (meetingId) {
+          const segmentId = `segment-${Date.now()}`;
           addTranscriptSegment({
             speakerId: null,
             confidence: 1,
@@ -175,6 +177,10 @@ export default function Home() {
             startTime: Math.max(0, segmentStartTime),
             endTime: segmentEndTime,
           });
+
+          // Save audio recording to IndexedDB
+          const durationMs = (result.duration || 0) * 1000;
+          await addRecording(meetingId, audioBlob, audioBlob.type, durationMs, [segmentId]);
         }
 
         // Fix 16: Enrich with timeout handling
@@ -266,6 +272,7 @@ export default function Home() {
       setError,
       addToHistory,
       addTranscriptSegment,
+      addRecording,
       endMeeting,
       setSummary,
       router,
