@@ -51,6 +51,10 @@ export class AudioChunker {
   // For overlap handling
   private overlapBuffer: Blob[] = [];
 
+  // Safari MP4 requires restarting MediaRecorder for each chunk
+  // because MP4 fragments are not valid standalone files
+  private useRestartMode: boolean = false;
+
   constructor(options: AudioChunkerOptions = {}) {
     this.options = {
       ...DEFAULT_OPTIONS,
@@ -81,6 +85,14 @@ export class AudioChunker {
       });
 
       this.mimeType = this.getSupportedMimeType();
+
+      // Safari MP4 needs restart mode - each chunk must be a complete MP4 file
+      // because MP4 fragments from ondataavailable are not valid standalone files
+      this.useRestartMode = this.mimeType.startsWith('audio/mp4');
+      if (this.useRestartMode) {
+        console.debug('[Chunker] Using restart mode for MP4 format (Safari)');
+      }
+
       this.mediaRecorder = new MediaRecorder(this.stream, {
         mimeType: this.mimeType,
         audioBitsPerSecond: 128000,
@@ -93,18 +105,16 @@ export class AudioChunker {
       this.currentChunkStartTime = this.sessionStartTime;
       this.isRunning = true;
 
-      this.mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          this.chunks.push(event.data);
-        }
-      };
+      this.setupMediaRecorderHandlers();
 
-      this.mediaRecorder.onerror = () => {
-        this.callbacks.onError?.(new Error('MediaRecorder error'));
-      };
-
-      // Start recording with frequent data collection for overlap support
-      this.mediaRecorder.start(100); // Collect data every 100ms
+      // Start recording
+      if (this.useRestartMode) {
+        // For MP4: record continuously, restart for each chunk
+        this.mediaRecorder.start();
+      } else {
+        // For WebM/OGG: collect data frequently for overlap support
+        this.mediaRecorder.start(100);
+      }
 
       // Start chunk timer
       this.scheduleChunkEmit();
@@ -154,15 +164,44 @@ export class AudioChunker {
   async forceEmit(): Promise<AudioChunk | null> {
     if (!this.isRunning) return null;
 
-    const chunk = this.emitCurrentChunk(false);
-
     // Reset timer
     if (this.chunkTimer) {
       clearTimeout(this.chunkTimer);
     }
-    this.scheduleChunkEmit();
 
-    return chunk;
+    if (this.useRestartMode) {
+      // For MP4: need to stop and restart to get complete file
+      return new Promise((resolve) => {
+        if (!this.mediaRecorder || !this.stream) {
+          resolve(null);
+          return;
+        }
+
+        const recorder = this.mediaRecorder;
+        recorder.onstop = () => {
+          const chunk = this.emitCurrentChunk(false);
+
+          // Restart if still running
+          if (this.isRunning && this.stream) {
+            this.mediaRecorder = new MediaRecorder(this.stream, {
+              mimeType: this.mimeType,
+              audioBitsPerSecond: 128000,
+            });
+            this.setupMediaRecorderHandlers();
+            this.mediaRecorder.start();
+          }
+
+          this.scheduleChunkEmit();
+          resolve(chunk);
+        };
+
+        recorder.stop();
+      });
+    } else {
+      const chunk = this.emitCurrentChunk(false);
+      this.scheduleChunkEmit();
+      return chunk;
+    }
   }
 
   isActive(): boolean {
@@ -173,15 +212,59 @@ export class AudioChunker {
     return performance.now() - this.currentChunkStartTime;
   }
 
+  private setupMediaRecorderHandlers(): void {
+    if (!this.mediaRecorder) return;
+
+    this.mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        this.chunks.push(event.data);
+      }
+    };
+
+    this.mediaRecorder.onerror = () => {
+      this.callbacks.onError?.(new Error('MediaRecorder error'));
+    };
+  }
+
   private scheduleChunkEmit(): void {
     if (!this.isRunning) return;
 
     this.chunkTimer = setTimeout(() => {
       if (this.isRunning) {
-        this.emitCurrentChunk(false);
+        if (this.useRestartMode) {
+          // For MP4: stop recorder to get complete file, then restart
+          this.emitChunkWithRestart();
+        } else {
+          this.emitCurrentChunk(false);
+        }
         this.scheduleChunkEmit();
       }
     }, this.options.chunkDuration);
+  }
+
+  // Emit chunk by stopping and restarting MediaRecorder (for Safari MP4)
+  private emitChunkWithRestart(): void {
+    if (!this.mediaRecorder || !this.stream || !this.isRunning) return;
+
+    const recorder = this.mediaRecorder;
+
+    recorder.onstop = () => {
+      // Emit the chunk with all collected data
+      this.emitCurrentChunk(false);
+
+      // Start a new recorder if still running
+      if (this.isRunning && this.stream) {
+        this.mediaRecorder = new MediaRecorder(this.stream, {
+          mimeType: this.mimeType,
+          audioBitsPerSecond: 128000,
+        });
+        this.setupMediaRecorderHandlers();
+        this.mediaRecorder.start();
+      }
+    };
+
+    // Request data and stop
+    recorder.stop();
   }
 
   private emitCurrentChunk(isFinal: boolean): AudioChunk | null {
@@ -197,9 +280,19 @@ export class AudioChunker {
       return null;
     }
 
-    // Combine overlap buffer with current chunks
-    const allChunks = [...this.overlapBuffer, ...this.chunks];
+    // For restart mode (Safari MP4), don't use overlap - each chunk is complete
+    // For streaming mode (WebM), combine overlap buffer with current chunks
+    const allChunks = this.useRestartMode
+      ? this.chunks
+      : [...this.overlapBuffer, ...this.chunks];
     const blob = new Blob(allChunks, { type: this.mimeType });
+
+    // Fix W4: Validate blob size before emitting
+    const MIN_CHUNK_SIZE = 4000; // ~4KB minimum for valid audio
+    if (blob.size < MIN_CHUNK_SIZE && !isFinal) {
+      console.debug('[Chunker] Chunk übersprungen - Blob zu klein:', blob.size);
+      return null;
+    }
 
     const chunk: AudioChunk = {
       id: `chunk-${Date.now()}-${this.chunkIndex}`,
@@ -213,8 +306,8 @@ export class AudioChunker {
     this.chunkIndex++;
     this.callbacks.onChunk?.(chunk);
 
-    // Store overlap for next chunk
-    if (!isFinal && this.options.overlap > 0) {
+    // Store overlap for next chunk (only for streaming mode, not restart mode)
+    if (!this.useRestartMode && !isFinal && this.options.overlap > 0) {
       // Keep last N milliseconds worth of data for overlap
       const overlapChunks = Math.ceil(this.options.overlap / 100); // Since we collect every 100ms
       this.overlapBuffer = this.chunks.slice(-overlapChunks);
@@ -224,7 +317,9 @@ export class AudioChunker {
 
     // Reset for next chunk
     this.chunks = [];
-    this.currentChunkStartTime = now - (isFinal ? 0 : this.options.overlap);
+    this.currentChunkStartTime = this.useRestartMode
+      ? now
+      : now - (isFinal ? 0 : this.options.overlap);
 
     return chunk;
   }
@@ -240,15 +335,19 @@ export class AudioChunker {
   }
 
   private getSupportedMimeType(): string {
+    // Priority order optimized for cross-platform compatibility
+    // MP4/AAC works on Safari, WebM/Opus works on Chrome/Firefox
+    // Safari reports WebM as "supported" but produces broken files!
     const types = [
-      'audio/webm;codecs=opus',
+      'audio/mp4',              // Safari-kompatibel (funktioniert auch auf anderen Browsern)
+      'audio/webm;codecs=opus', // Chrome/Firefox
       'audio/webm',
       'audio/ogg;codecs=opus',
-      'audio/mp4',
     ];
 
     for (const type of types) {
       if (MediaRecorder.isTypeSupported(type)) {
+        console.debug('[Chunker] Ausgewähltes Audio-Format:', type);
         return type;
       }
     }

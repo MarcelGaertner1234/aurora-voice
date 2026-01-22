@@ -4,11 +4,14 @@ import type { TranscriptionResult } from '@/types';
 // Whisper API limit is 25MB, use 24MB as safe limit
 const WHISPER_MAX_SIZE = 24 * 1024 * 1024;
 const CHUNK_DURATION_MS = 60000; // 1 Minute pro Chunk
+const CHUNK_TIMEOUT_MS = 180000; // 180 Sekunden Timeout (erhöht für lange Aufnahmen)
+const PARALLEL_CHUNKS = 3; // Parallele Chunk-Verarbeitung
+const MAX_RETRIES = 3; // Maximale Wiederholungsversuche
 
 // Convert audio blob to WAV for Whisper API compatibility
 // Safari/WebKit's MediaRecorder produces MP4 that Whisper may not parse correctly
 // WebM/OGG is supported directly by Whisper - no conversion needed
-async function convertAudioToWav(audioBlob: Blob): Promise<Blob> {
+export async function convertAudioToWav(audioBlob: Blob): Promise<Blob> {
   // WebM/OGG is supported directly by Whisper API - skip conversion
   if (audioBlob.type.includes('webm') || audioBlob.type.includes('ogg')) {
     return audioBlob;
@@ -60,7 +63,7 @@ async function transcribeWavDirect(
   formData.append('response_format', 'verbose_json');
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutId = setTimeout(() => controller.abort(), CHUNK_TIMEOUT_MS);
 
   let response: Response;
   try {
@@ -87,6 +90,34 @@ async function transcribeWavDirect(
     language: validated.language || 'unknown',
     duration: validated.duration || 0,
   };
+}
+
+// Retry wrapper with exponential backoff for network resilience
+async function transcribeWithRetry(
+  chunk: Blob,
+  apiKey: string,
+  language?: string
+): Promise<TranscriptionResult> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      return await transcribeWavDirect(chunk, apiKey, language);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.warn(`Transcription attempt ${attempt + 1}/${MAX_RETRIES} failed:`, lastError.message);
+
+      // Don't retry on last attempt
+      if (attempt === MAX_RETRIES - 1) break;
+
+      // Exponential backoff: 1s, 2s, 4s
+      const delay = Math.pow(2, attempt) * 1000;
+      console.log(`Retrying in ${delay}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+
+  throw lastError || new Error('Max retries exceeded');
 }
 
 // Split audio into chunks for large files
@@ -143,9 +174,9 @@ export async function transcribeAudio(
   const formData = createWhisperFormData(wavBlob, language);
   formData.append('response_format', 'verbose_json');
 
-  // Fix H1: Add 120s timeout for Whisper API (large audio files can take time)
+  // 180s timeout for Whisper API (large audio files can take time)
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutId = setTimeout(() => controller.abort(), CHUNK_TIMEOUT_MS);
 
   let response: Response;
   try {
@@ -201,20 +232,43 @@ export async function transcribeAudioWithChunking(
   // STEP 3: Converted audio too large - split into chunks
   console.log(`Audio size ${(convertedBlob.size / 1024 / 1024).toFixed(2)}MB exceeds ${(WHISPER_MAX_SIZE / 1024 / 1024).toFixed(0)}MB limit, splitting into chunks`);
   const chunks = await splitAudioIntoChunks(convertedBlob, CHUNK_DURATION_MS);
-  const transcripts: string[] = [];
+  console.log(`Split into ${chunks.length} chunks, processing ${PARALLEL_CHUNKS} in parallel`);
+
+  // Pre-allocate results array to maintain order
+  const results: TranscriptionResult[] = new Array(chunks.length);
+  let completedChunks = 0;
+
+  // Process chunks in parallel batches
+  for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
+    const batchStart = i;
+    const batch = chunks.slice(i, i + PARALLEL_CHUNKS);
+
+    // Process batch in parallel with retry logic
+    const batchResults = await Promise.all(
+      batch.map(async (chunk, j) => {
+        const result = await transcribeWithRetry(chunk, apiKey, language);
+        completedChunks++;
+        onProgress?.(completedChunks, chunks.length);
+        return { index: batchStart + j, result };
+      })
+    );
+
+    // Store results in correct order
+    batchResults.forEach(({ index, result }) => {
+      results[index] = result;
+    });
+  }
+
+  // Combine results maintaining original order
   let totalDuration = 0;
   let detectedLanguage = 'unknown';
-
-  for (let i = 0; i < chunks.length; i++) {
-    onProgress?.(i + 1, chunks.length);
-    // Chunks are already WAV from splitAudioIntoChunks, send directly
-    const result = await transcribeWavDirect(chunks[i], apiKey, language);
-    transcripts.push(result.text);
+  const transcripts = results.map(result => {
     totalDuration += result.duration;
     if (result.language && result.language !== 'unknown') {
       detectedLanguage = result.language;
     }
-  }
+    return result.text;
+  });
 
   return {
     text: transcripts.join(' '),

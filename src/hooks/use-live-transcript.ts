@@ -16,6 +16,7 @@ import {
 } from '@/lib/meetings/live';
 import type { TranscriptSegment } from '@/types/meeting';
 import { createWhisperFormData } from '@/lib/audio/recorder';
+import { convertAudioToWav } from '@/lib/ai/transcribe';
 
 export interface UseLiveTranscriptOptions {
   /** API endpoint for transcription */
@@ -56,7 +57,7 @@ export interface LiveTranscriptState {
 }
 
 const DEFAULT_OPTIONS: Required<Omit<UseLiveTranscriptOptions, 'onSegment' | 'onDecision' | 'onQuestion' | 'onError' | 'apiKey'>> = {
-  apiEndpoint: '/api/transcribe',
+  apiEndpoint: 'https://api.openai.com/v1/audio/transcriptions',
   language: 'de',
   chunkDuration: 5000,
   useSmartChunking: true,
@@ -76,6 +77,7 @@ export function useLiveTranscript(options: UseLiveTranscriptOptions = {}) {
   const transcribeAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const isPausedRef = useRef(false); // Track isPaused without stale closure
   const durationRef = useRef(0); // Track duration without stale closure
+  const apiKeyRef = useRef(options.apiKey); // Track apiKey without stale closure
 
   // State
   const [meetingState, setMeetingState] = useState<LiveMeetingState>(createLiveMeetingState());
@@ -96,6 +98,11 @@ export function useLiveTranscript(options: UseLiveTranscriptOptions = {}) {
   useEffect(() => {
     durationRef.current = duration;
   }, [duration]);
+
+  // Sync apiKey ref with options to prevent stale closure
+  useEffect(() => {
+    apiKeyRef.current = options.apiKey;
+  }, [options.apiKey]);
 
   // Clean up on unmount
   useEffect(() => {
@@ -124,6 +131,25 @@ export function useLiveTranscript(options: UseLiveTranscriptOptions = {}) {
   // Transcribe audio chunk with abort support
   // Fix C5: Use Map to track each request's AbortController independently
   const transcribeChunk = useCallback(async (chunk: AudioChunk): Promise<TranscriptSegment | null> => {
+    // Fix W1: Validate chunk before API call
+    const MIN_BLOB_SIZE = 4000; // ~4KB minimum for valid audio
+
+    if (!chunk.blob || chunk.blob.size < MIN_BLOB_SIZE) {
+      console.debug('[Whisper] Chunk übersprungen - zu klein:', {
+        id: chunk.id,
+        size: chunk.blob?.size || 0,
+        minRequired: MIN_BLOB_SIZE,
+      });
+      return null;
+    }
+
+    // Fix W2: Validate API key before making request
+    if (!apiKeyRef.current) {
+      console.error('[Whisper] Kein API-Key verfügbar');
+      setError('OpenAI API-Key fehlt');
+      return null;
+    }
+
     // Fix C5: Create AbortController for this specific request and store in Map
     const abortController = new AbortController();
     transcribeAbortControllersRef.current.set(chunk.id, abortController);
@@ -137,16 +163,40 @@ export function useLiveTranscript(options: UseLiveTranscriptOptions = {}) {
       setPendingChunks(prev => prev + 1);
       setIsProcessing(true);
 
-      const formData = createWhisperFormData(chunk.blob, opts.language);
+      // Try to convert audio to WAV for better compatibility
+      // Falls back to original blob if conversion fails (e.g., Safari MP4 chunks)
+      let audioBlob = chunk.blob;
+      try {
+        audioBlob = await convertAudioToWav(chunk.blob);
+      } catch (conversionError) {
+        // Conversion failed (likely incomplete MP4 fragment from Safari)
+        // Fall back to original blob - Whisper may still accept it
+        console.debug('[Whisper] Audio conversion failed, using original blob:', {
+          error: conversionError instanceof Error ? conversionError.message : 'Unknown error',
+          blobType: chunk.blob.type,
+          blobSize: chunk.blob.size,
+        });
+      }
+      const formData = createWhisperFormData(audioBlob, opts.language);
 
       const response = await fetch(opts.apiEndpoint, {
         method: 'POST',
-        headers: opts.apiKey ? { 'Authorization': `Bearer ${opts.apiKey}` } : {},
+        headers: { 'Authorization': `Bearer ${apiKeyRef.current}` },
         body: formData,
         signal: abortController.signal, // Add abort signal
       });
 
       if (!response.ok) {
+        // Fix W3: Read response body for detailed error info
+        const errorBody = await response.text().catch(() => 'Unable to read error body');
+        console.error('[Whisper] API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorBody,
+          chunkId: chunk.id,
+          blobSize: chunk.blob.size,
+          blobType: chunk.blob.type,
+        });
         throw new Error(`Transcription failed: ${response.statusText}`);
       }
 
@@ -194,7 +244,7 @@ export function useLiveTranscript(options: UseLiveTranscriptOptions = {}) {
         return newCount;
       });
     }
-  }, [opts.apiEndpoint, opts.apiKey, opts.language, options]);
+  }, [opts.apiEndpoint, opts.language, options]); // apiKeyRef.current used via ref, not in deps
 
   // Process transcribed segment
   const processTranscribedSegment = useCallback((segment: TranscriptSegment) => {
