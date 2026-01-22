@@ -21,6 +21,7 @@ import type {
   MeetingIndexEntry,
   ProjectContextIndex,
 } from '@/types/project';
+import { logger } from '@/lib/utils/logger';
 
 // Constants
 const AURORA_FOLDER = 'aurora';
@@ -272,7 +273,7 @@ export class AuroraFileSystem {
       const data = JSON.parse(content);
       return deserializeConfigFromFile(data);
     } catch (err) {
-      console.error('Failed to read aurora config (timeout or read error):', err);
+      logger.error('Failed to read aurora config (timeout or read error):', err);
       return null;
     }
   }
@@ -315,7 +316,7 @@ export class AuroraFileSystem {
       const data = JSON.parse(content);
       return (data.meetings || []).map(deserializeMeetingIndexEntry);
     } catch (err) {
-      console.error('Failed to read meeting index (timeout or read error):', err);
+      logger.error('Failed to read meeting index (timeout or read error):', err);
       return [];
     }
   }
@@ -345,7 +346,7 @@ export class AuroraFileSystem {
       const data = JSON.parse(content);
       return deserializeMeetingFromFile(data);
     } catch (err) {
-      console.error(`Failed to read meeting ${filename} (timeout or read error):`, err);
+      logger.error(`Failed to read meeting ${filename} (timeout or read error):`, err);
       return null;
     }
   }
@@ -426,7 +427,7 @@ export class AuroraFileSystem {
 
       return true;
     } catch (err) {
-      console.error(`Failed to delete meeting ${id}:`, err);
+      logger.error(`Failed to delete meeting ${id}:`, err);
       return false;
     }
   }
@@ -461,7 +462,7 @@ export class AuroraFileSystem {
       const data = JSON.parse(content);
       return (data.tasks || []).map(deserializeTaskFromFile);
     } catch (err) {
-      console.error('Failed to read tasks (timeout or read error):', err);
+      logger.error('Failed to read tasks (timeout or read error):', err);
       return [];
     }
   }
@@ -523,7 +524,7 @@ export class AuroraFileSystem {
       const data = JSON.parse(content);
       return deserializeContextIndexFromFile(data);
     } catch (err) {
-      console.error('Failed to read context index (timeout or read error):', err);
+      logger.error('Failed to read context index (timeout or read error):', err);
       return null;
     }
   }
@@ -558,7 +559,7 @@ export class AuroraFileSystem {
       const data = JSON.parse(content);
       return deserializeAnalysisFromFile(data);
     } catch (err) {
-      console.error('Failed to read analysis (timeout or read error):', err);
+      logger.error('Failed to read analysis (timeout or read error):', err);
       return null;
     }
   }
@@ -627,7 +628,7 @@ export class AuroraFileSystem {
     const data = new Uint8Array(arrayBuffer);
 
     await writeFile(filePath, data);
-    console.log('Recording file saved:', filePath);
+    logger.debug('Recording file saved:', filePath);
 
     return filename;
   }
@@ -660,7 +661,7 @@ export class AuroraFileSystem {
 
       return new Blob([data], { type: mimeType });
     } catch (err) {
-      console.error(`Failed to load recording file ${filename}:`, err);
+      logger.error(`Failed to load recording file ${filename}:`, err);
       return null;
     }
   }
@@ -677,7 +678,7 @@ export class AuroraFileSystem {
       }
       return false;
     } catch (err) {
-      console.error(`Failed to delete recording file ${filename}:`, err);
+      logger.error(`Failed to delete recording file ${filename}:`, err);
       return false;
     }
   }
@@ -705,7 +706,7 @@ export class AuroraFileSystem {
 
       return recordingFiles;
     } catch (err) {
-      console.error('Failed to list recording files:', err);
+      logger.error('Failed to list recording files:', err);
       return [];
     }
   }

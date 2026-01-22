@@ -4,6 +4,7 @@
 import { dbReady, saveMeeting, getMeetingById, saveRecording, getAllMeetings } from '@/lib/db';
 import type { Meeting, MeetingRecording } from '@/types/meeting';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '@/lib/utils/logger';
 
 const MIGRATION_KEY = 'aurora_indexeddb_primary_v1';
 
@@ -57,7 +58,7 @@ async function migrateMeetingToIndexedDB(
           ...meeting,
           projectPath, // Keep for export functionality
         });
-        console.log(`Migration: Updated meeting ${meeting.id} from project ${projectPath}`);
+        logger.info(`Migration: Updated meeting ${meeting.id} from project ${projectPath}`);
       }
       // else: IndexedDB version is newer, keep it
     } else {
@@ -66,12 +67,12 @@ async function migrateMeetingToIndexedDB(
         ...meeting,
         projectPath, // Keep for export functionality
       });
-      console.log(`Migration: Migrated meeting ${meeting.id} from project ${projectPath}`);
+      logger.info(`Migration: Migrated meeting ${meeting.id} from project ${projectPath}`);
     }
 
     return true;
   } catch (err) {
-    console.error(`Migration: Failed to migrate meeting ${meeting.id}:`, err);
+    logger.error(`Migration: Failed to migrate meeting ${meeting.id}:`, err);
     return false;
   }
 }
@@ -80,11 +81,11 @@ async function migrateMeetingToIndexedDB(
 export async function migrateProjectDataToIndexedDB(): Promise<void> {
   // Skip if already migrated
   if (hasMigrated()) {
-    console.log('Migration: Already completed, skipping');
+    logger.debug('Migration: Already completed, skipping');
     return;
   }
 
-  console.log('Migration: Starting IndexedDB primary storage migration...');
+  logger.info('Migration: Starting IndexedDB primary storage migration...');
 
   // Wait for IndexedDB to be ready
   await dbReady;
@@ -93,12 +94,12 @@ export async function migrateProjectDataToIndexedDB(): Promise<void> {
   const knownProjectPaths = getKnownProjectPaths();
 
   if (knownProjectPaths.length === 0) {
-    console.log('Migration: No known project paths, marking complete');
+    logger.debug('Migration: No known project paths, marking complete');
     markMigrationComplete();
     return;
   }
 
-  console.log(`Migration: Found ${knownProjectPaths.length} known project paths`);
+  logger.info(`Migration: Found ${knownProjectPaths.length} known project paths`);
 
   // For each project path, try to read meetings from .aurora folder
   // We use dynamic import to avoid issues on non-Tauri environments
@@ -116,14 +117,14 @@ export async function migrateProjectDataToIndexedDB(): Promise<void> {
         const auroraPath = await join(projectPath, 'aurora');
 
         if (!(await exists(auroraPath))) {
-          console.log(`Migration: No .aurora folder in ${projectPath}, skipping`);
+          logger.debug(`Migration: No .aurora folder in ${projectPath}, skipping`);
           continue;
         }
 
         const fs = createAuroraFS(projectPath);
         const meetings = await fs.listMeetings();
 
-        console.log(`Migration: Found ${meetings.length} meetings in ${projectPath}`);
+        logger.info(`Migration: Found ${meetings.length} meetings in ${projectPath}`);
 
         for (const meeting of meetings) {
           const success = await migrateMeetingToIndexedDB(meeting, projectPath);
@@ -145,11 +146,11 @@ export async function migrateProjectDataToIndexedDB(): Promise<void> {
                     transcriptSegmentIds: [],
                   };
                   await saveRecording(recording, meeting.id);
-                  console.log(`Migration: Migrated recording ${filename} for meeting ${meeting.id}`);
+                  logger.debug(`Migration: Migrated recording ${filename} for meeting ${meeting.id}`);
                 }
               }
             } catch (recordingErr) {
-              console.warn(`Migration: Could not migrate recordings for meeting ${meeting.id}:`, recordingErr);
+              logger.warn(`Migration: Could not migrate recordings for meeting ${meeting.id}:`, recordingErr);
               // Don't fail the whole migration for recording errors
             }
           } else {
@@ -157,12 +158,12 @@ export async function migrateProjectDataToIndexedDB(): Promise<void> {
           }
         }
       } catch (projectErr) {
-        console.error(`Migration: Failed to process project ${projectPath}:`, projectErr);
+        logger.error(`Migration: Failed to process project ${projectPath}:`, projectErr);
         errorCount++;
       }
     }
   } catch (err) {
-    console.warn('Migration: Not in Tauri environment or module load failed:', err);
+    logger.warn('Migration: Not in Tauri environment or module load failed:', err);
     // In web-only mode, we can't read from file system
     // Just mark as complete since there's nothing to migrate
   }
@@ -173,7 +174,7 @@ export async function migrateProjectDataToIndexedDB(): Promise<void> {
   // Mark migration as complete
   markMigrationComplete();
 
-  console.log(`Migration: Complete. Migrated ${migratedCount} meetings, ${errorCount} errors`);
+  logger.info(`Migration: Complete. Migrated ${migratedCount} meetings, ${errorCount} errors`);
 }
 
 // Export for testing

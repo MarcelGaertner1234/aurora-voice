@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import { AppLayout } from '@/components/layout/app-layout';
+import { ApiKeyLoader } from '@/components/providers/api-key-loader';
 import './globals.css';
 
 const geistSans = Geist({
@@ -26,7 +27,9 @@ export default function RootLayout({
   return (
     <html lang="de" suppressHydrationWarning>
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <AppLayout>{children}</AppLayout>
+        <ApiKeyLoader>
+          <AppLayout>{children}</AppLayout>
+        </ApiKeyLoader>
       </body>
     </html>
   );

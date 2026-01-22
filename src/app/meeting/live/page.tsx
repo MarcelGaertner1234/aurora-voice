@@ -26,6 +26,7 @@ import {
   ChevronUp,
   FileCode2,
   ExternalLink,
+  Pause,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store/settings';
 import { useMeetingStore } from '@/lib/store/meeting-store';
@@ -34,8 +35,7 @@ import { useSpeakerStore } from '@/lib/store/speaker-store';
 import { useProjectStore } from '@/lib/store/project-store';
 import { findMatchingFiles } from '@/lib/project/matcher';
 import type { ProjectContext, ProjectMatch } from '@/types/project';
-import { useRecorder } from '@/hooks/use-recorder';
-import { transcribeAudioWithChunking } from '@/lib/ai/transcribe';
+import { useLiveTranscript } from '@/hooks/use-live-transcript';
 import { GlassCard } from '@/components/ui/glass-card';
 import { SpeakerLabel } from '@/components/transcript/speaker-label';
 import { SpeakerAssignment } from '@/components/speakers/speaker-assignment';
@@ -56,13 +56,7 @@ import {
 } from '@/lib/diarization';
 import { KeywordHighlight, KeywordFilterBar, KeywordLegend } from '@/components/transcript/keyword-highlight';
 import {
-  detectKeywords,
-  detectDecision,
-  detectQuestions,
   DEFAULT_KEYWORD_CATEGORIES,
-  type DetectedDecision,
-  type DetectedQuestion,
-  type KeywordMatch,
 } from '@/lib/meetings/live';
 import { ResearchPanel } from '@/components/research/research-panel';
 import { useResearch } from '@/hooks/use-research';
@@ -201,7 +195,7 @@ function LiveMeetingContent() {
   const meetingId = searchParams.get('id');
 
   // Stores
-  const { settings, addTranscriptionUsage } = useAppStore();
+  const { settings, addTranscriptionUsage, apiKeysLoaded } = useAppStore();
   const {
     currentMeeting,
     setCurrentMeeting,
@@ -217,24 +211,51 @@ function LiveMeetingContent() {
   const { speakers, loadSpeakers, createSpeaker } = useSpeakerStore();
   const { getOrIndexProject, getCachedProject } = useProjectStore();
 
-  // Recorder
-  const { toggleRecording, isRecording: isRecorderActive } = useRecorder();
+  // Live Transcription
+  const {
+    isRecording: isRecorderActive,
+    isPaused,
+    isProcessing: isChunkProcessing,
+    segments: liveSegments,
+    pendingChunks,
+    audioLevel: liveAudioLevel,
+    isSpeaking,
+    decisions: liveDetectedDecisions,
+    questions: liveDetectedQuestions,
+    error: transcriptError,
+    start: startLiveTranscription,
+    stop: stopLiveTranscription,
+    pause: pauseTranscription,
+    resume: resumeTranscription,
+  } = useLiveTranscript({
+    apiKey: settings.openaiApiKey,
+    language: settings.language,
+    chunkDuration: 5000,
+    useSmartChunking: true,
+    onSegment: (segment) => {
+      addTranscriptSegment(segment);
+      addTranscriptionUsage((segment.endTime - segment.startTime) / 1000);
+    },
+  });
 
   // Local state
-  const [isProcessing, setIsProcessing] = useState(false);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [isExtractingTasks, setIsExtractingTasks] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [meetingTasks, setMeetingTasks] = useState<Task[]>([]);
   const [showSpeakerControls, setShowSpeakerControls] = useState(false);
   const [showKeywords, setShowKeywords] = useState(true);
-  const [liveDecisions, setLiveDecisions] = useState<DetectedDecision[]>([]);
-  const [liveQuestions, setLiveQuestions] = useState<DetectedQuestion[]>([]);
-  const [audioLevel, setAudioLevel] = useState(0);
   const [showResearch, setShowResearch] = useState(false);
   const [showProjectContext, setShowProjectContext] = useState(true);
   const [projectMatches, setProjectMatches] = useState<ProjectMatch[]>([]);
   const [projectContext, setProjectContext] = useState<ProjectContext | null>(null);
+
+  // Sync transcript error to local error state
+  useEffect(() => {
+    if (transcriptError) {
+      setError(transcriptError);
+    }
+  }, [transcriptError]);
 
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
@@ -308,78 +329,36 @@ function LiveMeetingContent() {
     }
   }, [liveTranscript, projectContext]);
 
-  // Handle start recording
+  // Handle start recording with live transcription
   const handleStartRecording = useCallback(async () => {
     if (!meetingId) return;
+
+    // Check if API key is available
+    if (!settings.openaiApiKey) {
+      setError('OpenAI API-Key fehlt. Bitte in den Einstellungen hinterlegen.');
+      return;
+    }
+
     try {
       if (currentMeeting?.status === 'scheduled') {
         await startMeeting(meetingId);
         await startMeetingSession(meetingId);
       }
       setRecording(true);
-      await toggleRecording();
+      await startLiveTranscription();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start recording');
     }
-  }, [currentMeeting, meetingId, startMeeting, setRecording, toggleRecording]);
+  }, [currentMeeting, meetingId, startMeeting, setRecording, startLiveTranscription, settings.openaiApiKey]);
 
-  // Handle stop recording and transcribe
+  // Handle stop recording - transcription already happened during recording
   const handleStopRecording = useCallback(async () => {
     try {
-      setIsProcessing(true);
-
-      // Capture the absolute timestamp BEFORE stopping the recording
-      // Using Date.now() instead of getElapsedTime() ensures timestamps work even after page reload
-      const segmentStartTime = Date.now();
-
-      const blob = await toggleRecording();
-
-      if (blob) {
-        // Transcribe the audio
-        const result = await transcribeAudioWithChunking(
-          blob,
-          settings.openaiApiKey,
-          settings.language
-        );
-
-        const segment: TranscriptSegment = {
-          id: `segment-${Date.now()}`,
-          speakerId: null,
-          confidence: 0.8,
-          confirmed: false,
-          text: result.text,
-          startTime: segmentStartTime,
-          endTime: segmentStartTime + (result.duration || 0) * 1000,
-        };
-
-        // Add to live transcript
-        addTranscriptSegment(segment);
-
-        // Track transcription usage for statistics
-        addTranscriptionUsage(result.duration || 0);
-
-        // Save audio recording to IndexedDB
-        if (meetingId) {
-          await addRecording(meetingId, blob, blob.type, (result.duration || 0) * 1000, [segment.id]);
-        }
-
-        // Detect decisions and questions in the new segment
-        const decision = detectDecision(segment);
-        if (decision) {
-          setLiveDecisions(prev => [...prev, decision]);
-        }
-
-        const questions = detectQuestions(segment);
-        if (questions.length > 0) {
-          setLiveQuestions(prev => [...prev, ...questions]);
-        }
-      }
+      await stopLiveTranscription();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process recording');
-    } finally {
-      setIsProcessing(false);
+      setError(err instanceof Error ? err.message : 'Failed to stop recording');
     }
-  }, [toggleRecording, settings.openaiApiKey, settings.language, addTranscriptSegment, addRecording, meetingId, addTranscriptionUsage]);
+  }, [stopLiveTranscription]);
 
   // Handle end meeting
   const handleEndMeeting = useCallback(async () => {
@@ -597,7 +576,7 @@ function LiveMeetingContent() {
                   {!isLive ? (
                     <button
                       onClick={handleStartRecording}
-                      disabled={!settings.openaiApiKey || isProcessing}
+                      disabled={!settings.openaiApiKey}
                       className="flex items-center gap-2 rounded-full bg-success px-6 py-3 text-white transition-colors hover:bg-success/90 disabled:opacity-50"
                     >
                       <Play className="h-5 w-5" />
@@ -605,27 +584,53 @@ function LiveMeetingContent() {
                     </button>
                   ) : (
                     <>
+                      {/* Start/Stop Recording Button */}
                       <button
                         onClick={isRecorderActive ? handleStopRecording : handleStartRecording}
-                        disabled={isProcessing}
+                        disabled={isChunkProcessing && pendingChunks > 3}
                         className={`flex h-14 w-14 items-center justify-center rounded-full transition-colors ${
-                          isRecorderActive
+                          isRecorderActive && !isPaused
                             ? 'bg-error text-white animate-pulse'
+                            : isPaused
+                            ? 'bg-warning text-white'
                             : 'bg-primary text-white'
                         }`}
                       >
-                        {isProcessing ? (
-                          <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                        ) : isRecorderActive ? (
+                        {isRecorderActive ? (
                           <MicOff className="h-6 w-6" />
                         ) : (
                           <Mic className="h-6 w-6" />
                         )}
                       </button>
 
+                      {/* Pause/Resume Button */}
+                      {isRecorderActive && (
+                        <button
+                          onClick={isPaused ? resumeTranscription : pauseTranscription}
+                          className={`flex items-center gap-2 rounded-full px-4 py-2 transition-colors ${
+                            isPaused
+                              ? 'bg-success text-white hover:bg-success/90'
+                              : 'bg-warning/20 text-warning hover:bg-warning/30'
+                          }`}
+                        >
+                          {isPaused ? (
+                            <>
+                              <Play className="h-4 w-4" />
+                              Fortsetzen
+                            </>
+                          ) : (
+                            <>
+                              <Pause className="h-4 w-4" />
+                              Pausieren
+                            </>
+                          )}
+                        </button>
+                      )}
+
+                      {/* End Meeting Button */}
                       <button
                         onClick={handleEndMeeting}
-                        disabled={isProcessing || isRecorderActive}
+                        disabled={isRecorderActive || (isChunkProcessing && pendingChunks > 0)}
                         className="flex items-center gap-2 rounded-full bg-foreground/10 px-4 py-2 text-foreground-secondary transition-colors hover:bg-foreground/20 disabled:opacity-50"
                       >
                         <Square className="h-4 w-4" />
@@ -635,12 +640,40 @@ function LiveMeetingContent() {
                   )}
                 </div>
 
-                {isLive && (
-                  <p className="mt-3 text-center text-xs text-foreground-secondary">
-                    {isRecorderActive
-                      ? 'Aufnahme läuft... Klicke zum Stoppen und Transkribieren.'
-                      : 'Klicke auf das Mikrofon, um einen Abschnitt aufzunehmen.'}
-                  </p>
+                {/* Live Status UI */}
+                {isLive && isRecorderActive && (
+                  <div className="mt-4 flex items-center justify-center gap-4">
+                    {/* Speaking Indicator */}
+                    {isSpeaking && (
+                      <span className="flex items-center gap-1.5 text-success">
+                        <Volume2 className="h-4 w-4 animate-pulse" />
+                        <span className="text-xs">Spricht...</span>
+                      </span>
+                    )}
+
+                    {/* Pending Chunks */}
+                    {pendingChunks > 0 && (
+                      <span className="flex items-center gap-1.5 text-xs text-foreground-secondary">
+                        <div className="h-2 w-2 animate-spin rounded-full border border-primary border-t-transparent" />
+                        {pendingChunks} Chunk(s) in Verarbeitung
+                      </span>
+                    )}
+
+                    {/* Pause Status */}
+                    {isPaused && (
+                      <span className="text-xs font-medium text-warning">
+                        Pausiert
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {isLive && !isRecorderActive && (
+                  <div className="mt-3 text-center">
+                    <p className="text-xs text-foreground-secondary">
+                      Klicke auf das Mikrofon, um die Aufnahme zu starten.
+                    </p>
+                  </div>
                 )}
               </GlassCard>
             )}
@@ -845,7 +878,7 @@ function LiveMeetingContent() {
             </GlassCard>
 
             {/* Live Decisions */}
-            {isLive && liveDecisions.length > 0 && (
+            {isLive && liveDetectedDecisions.length > 0 && (
               <GlassCard>
                 <div className="mb-3 flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-success" />
@@ -853,11 +886,11 @@ function LiveMeetingContent() {
                     Entscheidungen
                   </h2>
                   <span className="rounded-full bg-success/10 px-1.5 py-0.5 text-[10px] font-medium text-success">
-                    {liveDecisions.length}
+                    {liveDetectedDecisions.length}
                   </span>
                 </div>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {liveDecisions.map((decision, index) => (
+                  {liveDetectedDecisions.map((decision, index) => (
                     <div key={index} className="text-sm">
                       <p className="font-medium text-foreground">{decision.text}</p>
                       <p className="text-xs text-foreground-secondary">
@@ -870,7 +903,7 @@ function LiveMeetingContent() {
             )}
 
             {/* Live Questions */}
-            {isLive && liveQuestions.filter(q => !q.isRhetorical).length > 0 && (
+            {isLive && liveDetectedQuestions.filter(q => !q.isRhetorical).length > 0 && (
               <GlassCard>
                 <div className="mb-3 flex items-center gap-2">
                   <HelpCircle className="h-4 w-4 text-violet-500" />
@@ -878,11 +911,11 @@ function LiveMeetingContent() {
                     Offene Fragen
                   </h2>
                   <span className="rounded-full bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-500">
-                    {liveQuestions.filter(q => !q.isRhetorical).length}
+                    {liveDetectedQuestions.filter(q => !q.isRhetorical).length}
                   </span>
                 </div>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {liveQuestions.filter(q => !q.isRhetorical).map((question, index) => (
+                  {liveDetectedQuestions.filter(q => !q.isRhetorical).map((question, index) => (
                     <div key={index} className="text-sm">
                       <p className="text-foreground">{question.text}</p>
                       <p className="text-xs text-foreground-secondary">

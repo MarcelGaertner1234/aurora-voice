@@ -5,6 +5,7 @@ import type { Meeting, Transcript, MeetingSummary, AgendaItem, MeetingRecording 
 import type { Task } from '@/types/task';
 import type { SpeakerProfile } from '@/types/speaker';
 import { convertToPlayableFormat } from '../audio/recorder';
+import { logger } from '../utils/logger';
 
 // Database schema version
 const DB_VERSION = 2;
@@ -89,21 +90,21 @@ async function checkAndMigrateDatabase(): Promise<void> {
       const version = db.version;
       db.close();
 
-      console.log(`Database check: version=${version}, hasRecordings=${hasRecordings}`);
+      logger.debug(`Database check: version=${version}, hasRecordings=${hasRecordings}`);
 
       if (!hasRecordings) {
-        console.warn('Recordings table missing, deleting database for fresh start...');
+        logger.warn('Recordings table missing, deleting database for fresh start...');
         const deleteRequest = indexedDB.deleteDatabase(DB_NAME);
         deleteRequest.onsuccess = () => {
-          console.log('Old database deleted successfully');
+          logger.debug('Old database deleted successfully');
           resolve();
         };
         deleteRequest.onerror = () => {
-          console.error('Failed to delete old database');
+          logger.error('Failed to delete old database');
           resolve(); // Continue anyway
         };
         deleteRequest.onblocked = () => {
-          console.warn('Database delete blocked, continuing...');
+          logger.warn('Database delete blocked, continuing...');
           resolve();
         };
       } else {
@@ -150,31 +151,31 @@ async function initializeDatabase(): Promise<void> {
   const dbInstance = getDb();
   try {
     await dbInstance.open();
-    console.log('Database opened successfully, version:', dbInstance.verno);
+    logger.debug('Database opened successfully, version:', dbInstance.verno);
   } catch (err) {
-    console.error('Failed to open database:', err);
+    logger.error('Failed to open database:', err);
     // If any error, try to delete and recreate
-    console.warn('Database error, attempting recovery by deleting and recreating...');
+    logger.warn('Database error, attempting recovery by deleting and recreating...');
     try {
       dbInstance.close();
     } catch (closeErr) {
-      console.warn('Failed to close database during recovery:', closeErr);
+      logger.warn('Failed to close database during recovery:', closeErr);
     }
 
     // Fix: Wrap recovery operations in try-catch with proper logging
     try {
       await dbInstance.delete();
-      console.log('Database deleted successfully during recovery');
+      logger.debug('Database deleted successfully during recovery');
     } catch (deleteErr) {
-      console.error('Failed to delete database during recovery:', deleteErr);
+      logger.error('Failed to delete database during recovery:', deleteErr);
       throw new Error(`Database recovery failed: could not delete database - ${deleteErr}`);
     }
 
     try {
       await dbInstance.open();
-      console.log('Database recreated successfully');
+      logger.debug('Database recreated successfully');
     } catch (reopenErr) {
-      console.error('Failed to reopen database during recovery:', reopenErr);
+      logger.error('Failed to reopen database during recovery:', reopenErr);
       throw new Error(`Database recovery failed: could not reopen database - ${reopenErr}`);
     }
   }
@@ -280,7 +281,7 @@ export async function serializeRecording(recording: MeetingRecording, meetingId:
     if (!audioData || audioData.byteLength === 0) {
       throw new Error('ArrayBuffer conversion resulted in empty data');
     }
-    console.log('Serialized recording:', {
+    logger.debug('Serialized recording:', {
       id: recording.id,
       originalBlobSize: recording.blob.size,
       arrayBufferSize: audioData.byteLength,
@@ -295,13 +296,13 @@ export async function serializeRecording(recording: MeetingRecording, meetingId:
       transcriptSegmentIds: recording.transcriptSegmentIds,
     };
   } catch (err) {
-    console.error('Failed to serialize recording:', err);
+    logger.error('Failed to serialize recording:', err);
     throw err;
   }
 }
 
 export async function deserializeRecording(stored: StoredRecording): Promise<MeetingRecording & { meetingId: string }> {
-  console.log('Deserializing recording:', {
+  logger.debug('Deserializing recording:', {
     id: stored.id,
     audioDataSize: stored.audioData?.byteLength,
     mimeType: stored.mimeType,
@@ -340,7 +341,7 @@ export async function deserializeRecording(stored: StoredRecording): Promise<Mee
     reader.readAsDataURL(blob);
   });
 
-  console.log('Deserialized recording successfully:', {
+  logger.debug('Deserialized recording successfully:', {
     id: stored.id,
     blobSize: blob.size,
     dataUrlLength: dataUrl.length,
@@ -530,7 +531,7 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
   const stored = await db.recordings.where('meetingId').equals(meetingId).toArray();
 
   // Debug logging: Raw recordings from DB
-  console.log('Raw recordings from DB:', {
+  logger.debug('Raw recordings from DB:', {
     meetingId,
     count: stored.length,
     recordings: stored.map(r => ({
@@ -548,12 +549,12 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
         if (record.blob && !record.audioData) {
           // Prevent race condition: skip if already being migrated
           if (migratingRecordings.has(record.id)) {
-            console.log('Recording migration already in progress, skipping:', record.id);
+            logger.debug('Recording migration already in progress, skipping:', record.id);
             return null;
           }
 
           migratingRecordings.add(record.id);
-          console.log('Migrating recording from blob to audioData format:', record.id);
+          logger.info('Migrating recording from blob to audioData format:', record.id);
           try {
             const audioData = await record.blob.arrayBuffer();
             await db.recordings.update(record.id, {
@@ -562,9 +563,9 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
             });
             record.audioData = audioData;
             record.blob = undefined;
-            console.log('Recording migrated successfully:', record.id);
+            logger.debug('Recording migrated successfully:', record.id);
           } catch (err) {
-            console.error('Failed to migrate recording:', record.id, err);
+            logger.error('Failed to migrate recording:', record.id, err);
             return null;
           } finally {
             migratingRecordings.delete(record.id);
@@ -573,14 +574,14 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
 
         // Skip recordings without audioData (couldn't be migrated)
         if (!record.audioData) {
-          console.warn('Skipping recording without audioData:', record.id);
+          logger.warn('Skipping recording without audioData:', record.id);
           return null;
         }
 
         const recording = await deserializeRecording(record);
 
         if (!recording.blob || recording.blob.size === 0) {
-          console.warn('Skipping recording with invalid blob:', recording.id);
+          logger.warn('Skipping recording with invalid blob:', recording.id);
           return null;
         }
 
@@ -591,7 +592,7 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
 
         if (!canPlay) {
           try {
-            console.log('Converting old recording for Safari playback:', recording.id);
+            logger.info('Converting old recording for Safari playback:', recording.id);
             const converted = await convertToPlayableFormat(recording.blob);
 
             // Update in-memory recording
@@ -605,16 +606,16 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
               mimeType: converted.mimeType,
             });
 
-            console.log('Recording converted and saved:', recording.id);
+            logger.debug('Recording converted and saved:', recording.id);
           } catch (err) {
-            console.error('Failed to convert recording:', recording.id, err);
+            logger.error('Failed to convert recording:', recording.id, err);
             // Return original even if conversion fails (user can delete)
           }
         }
 
         return recording;
       } catch (err) {
-        console.error('Failed to process recording:', record.id, err);
+        logger.error('Failed to process recording:', record.id, err);
         return null;
       }
     })
@@ -622,7 +623,7 @@ export async function getRecordingsByMeetingId(meetingId: string): Promise<(Meet
 
   const validRecordings = recordings.filter((r): r is (MeetingRecording & { meetingId: string }) => r !== null);
 
-  console.log('Recording loading complete:', {
+  logger.debug('Recording loading complete:', {
     meetingId,
     total: stored.length,
     valid: validRecordings.length,
@@ -639,7 +640,7 @@ export async function getRecordingById(id: string): Promise<(MeetingRecording & 
 
   // Migration: Convert old blob format to new audioData format
   if (stored.blob && !stored.audioData) {
-    console.log('Migrating recording from blob to audioData format:', stored.id);
+    logger.info('Migrating recording from blob to audioData format:', stored.id);
     try {
       const audioData = await stored.blob.arrayBuffer();
       await db.recordings.update(stored.id, {
@@ -648,15 +649,15 @@ export async function getRecordingById(id: string): Promise<(MeetingRecording & 
       });
       stored.audioData = audioData;
       stored.blob = undefined;
-      console.log('Recording migrated successfully:', stored.id);
+      logger.debug('Recording migrated successfully:', stored.id);
     } catch (err) {
-      console.error('Failed to migrate recording:', stored.id, err);
+      logger.error('Failed to migrate recording:', stored.id, err);
       return undefined;
     }
   }
 
   if (!stored.audioData) {
-    console.warn('Recording without audioData:', stored.id);
+    logger.warn('Recording without audioData:', stored.id);
     return undefined;
   }
 
@@ -668,11 +669,11 @@ export async function saveRecording(recording: MeetingRecording, meetingId: stri
 
   // Validate blob before saving
   if (!recording.blob || recording.blob.size === 0) {
-    console.error('Cannot save recording: invalid or empty blob');
+    logger.error('Cannot save recording: invalid or empty blob');
     throw new Error('Invalid recording blob');
   }
 
-  console.log('Saving recording:', {
+  logger.debug('Saving recording:', {
     id: recording.id,
     blobSize: recording.blob.size,
     blobType: recording.blob.type,

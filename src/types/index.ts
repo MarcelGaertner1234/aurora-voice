@@ -8,7 +8,7 @@ export * from './agent';
 
 export type Mode = 'notes' | 'meeting' | 'code';
 
-export type RecordingState = 'idle' | 'recording' | 'processing' | 'transcribing' | 'enriching';
+export type RecordingState = 'idle' | 'recording' | 'paused' | 'processing' | 'transcribing' | 'enriching';
 
 export type LLMProvider = 'openai' | 'anthropic' | 'ollama';
 

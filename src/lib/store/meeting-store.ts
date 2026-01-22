@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import { v4 as uuidv4 } from 'uuid';
+import { logger } from '@/lib/utils/logger';
 import type {
   Meeting,
   MeetingPhase,
@@ -297,7 +298,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
       // Best-effort export if project path is set
       if (input.projectPath) {
-        exportMeetingToProject(meeting).catch(console.warn);
+        exportMeetingToProject(meeting).catch((err) => logger.warn('Failed to export meeting to project:', err));
       }
 
       set((state) => ({
@@ -488,21 +489,21 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
           if (updated.transcript?.segments && updated.transcript.segments.length > 0) {
             const transcriptMd = generateTranscriptMarkdown(updated, []);
             await fs.saveTranscriptMarkdown(updated, transcriptMd);
-            console.log('Transcript markdown exported');
+            logger.debug('Transcript markdown exported');
           }
 
           // Export summary markdown if available
           if (updated.summary) {
             const summaryMd = generateSummaryMarkdown(updated);
             await fs.saveSummaryMarkdown(updated, summaryMd);
-            console.log('Summary markdown exported');
+            logger.debug('Summary markdown exported');
           }
 
           // Save meeting metadata JSON
           await fs.saveMeetingMetadata(updated);
-          console.log('Meeting metadata exported');
+          logger.debug('Meeting metadata exported');
         } catch (exportErr) {
-          console.error('Failed to export meeting files:', exportErr);
+          logger.error('Failed to export meeting files:', exportErr);
           // Don't fail the end meeting operation due to export failure
         }
       }
@@ -569,7 +570,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       try {
         const meeting = await get().getMeeting(currentMeetingId);
         if (!meeting) {
-          console.warn('Meeting not found, skipping segment persistence');
+          logger.warn('Meeting not found, skipping segment persistence');
           return;
         }
 
@@ -665,10 +666,10 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
               currentMeeting: rolledBackCurrent,
             };
           });
-          console.error('Failed to save transcript segment, rolled back:', saveErr);
+          logger.error('Failed to save transcript segment, rolled back:', saveErr);
         }
       } catch (err) {
-        console.error('Failed to save transcript segment to storage:', err);
+        logger.error('Failed to save transcript segment to storage:', err);
       }
     } else {
       // No meeting ID, just update local state (for preview/testing)
@@ -840,9 +841,9 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         const fs = projectProvider.getFileSystem();
         const summaryMd = generateSummaryMarkdown(updated);
         await fs.saveSummaryMarkdown(updated, summaryMd);
-        console.log('Summary markdown updated');
+        logger.debug('Summary markdown updated');
       } catch (exportErr) {
-        console.error('Failed to export summary markdown:', exportErr);
+        logger.error('Failed to export summary markdown:', exportErr);
       }
     }
 
@@ -924,7 +925,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
           const summaryMd = generateSummaryMarkdown(updated);
           await fs.saveSummaryMarkdown(updated, summaryMd);
         } catch (exportErr) {
-          console.error('Failed to export summary markdown:', exportErr);
+          logger.error('Failed to export summary markdown:', exportErr);
         }
       }
 
@@ -972,7 +973,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
           const summaryMd = generateSummaryMarkdown(updated);
           await fs.saveSummaryMarkdown(updated, summaryMd);
         } catch (exportErr) {
-          console.error('Failed to export summary markdown:', exportErr);
+          logger.error('Failed to export summary markdown:', exportErr);
         }
       }
 
@@ -1020,7 +1021,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
           const summaryMd = generateSummaryMarkdown(updated);
           await fs.saveSummaryMarkdown(updated, summaryMd);
         } catch (exportErr) {
-          console.error('Failed to export summary markdown:', exportErr);
+          logger.error('Failed to export summary markdown:', exportErr);
         }
       }
 
@@ -1036,7 +1037,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
   // Add audio recording to meeting (stored in IndexedDB for all meeting types)
   addRecording: async (meetingId: string, blob: Blob, mimeType: string, duration: number, transcriptSegmentIds: string[] = []) => {
-    console.log('addRecording called:', {
+    logger.debug('addRecording called:', {
       meetingId,
       blobSize: blob.size,
       blobType: blob.type,
@@ -1061,7 +1062,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
     // Save recording to IndexedDB (blob storage)
     await dbSaveRecording(recording, meetingId);
 
-    console.log('Recording saved successfully:', {
+    logger.debug('Recording saved successfully:', {
       recordingId: recording.id,
       meetingId,
     });
@@ -1072,9 +1073,9 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         const projectProvider = getProjectStorageProvider(meeting.projectPath);
         const fs = projectProvider.getFileSystem();
         const filename = await fs.saveRecordingFile(meeting, recording.id, blob, mimeType);
-        console.log('Recording file saved to project folder:', filename);
+        logger.debug('Recording file saved to project folder:', filename);
       } catch (fileErr) {
-        console.error('Failed to save recording file to project folder:', fileErr);
+        logger.error('Failed to save recording file to project folder:', fileErr);
         // Don't fail the operation - IndexedDB save already succeeded
       }
     }
@@ -1085,7 +1086,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
   // Load recordings for a meeting from IndexedDB
   loadRecordings: async (meetingId: string) => {
     const recordings = await getRecordingsByMeetingId(meetingId);
-    console.log('loadRecordings result:', {
+    logger.debug('loadRecordings result:', {
       meetingId,
       count: recordings.length,
       recordings: recordings.map(r => ({
@@ -1099,7 +1100,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
 
   // Delete a single recording
   deleteRecording: async (recordingId: string) => {
-    console.log('Deleting recording:', recordingId);
+    logger.debug('Deleting recording:', recordingId);
     await dbDeleteRecording(recordingId);
   },
 
@@ -1183,7 +1184,7 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       }));
 
       // Best-effort export to project folder
-      exportMeetingToProject(updated).catch(console.warn);
+      exportMeetingToProject(updated).catch((err) => logger.warn('Failed to export meeting to project:', err));
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'Failed to set export path' });
       throw err;
@@ -1241,11 +1242,11 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         try {
           await exportRecordingToProject(meeting, recording);
         } catch (err) {
-          console.warn('Failed to export recording:', err);
+          logger.warn('Failed to export recording:', err);
         }
       }
 
-      console.log(`Meeting ${meetingId} exported to ${meeting.projectPath}`);
+      logger.info(`Meeting ${meetingId} exported to ${meeting.projectPath}`);
     } catch (err) {
       set({ error: err instanceof Error ? err.message : 'Failed to export meeting' });
       throw err;

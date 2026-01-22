@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { Mode, RecordingState, Settings, HistoryEntry, EnrichmentResult, UsageStats, LLMProvider } from '@/types';
 import { DEFAULT_SETTINGS, DEFAULT_USAGE_STATS } from '@/types';
+import { apiKeyStore } from '@/lib/storage/secure-store';
+import { logger } from '@/lib/utils/logger';
 
 // Approximate costs per 1M tokens (Jan 2025)
 const COST_PER_1M_TOKENS: Record<string, { input: number; output: number }> = {
@@ -80,6 +82,10 @@ interface AppState {
   addTranscriptionUsage: (durationSeconds: number) => void;
   addEnrichmentUsage: (inputText: string, outputText: string, provider: LLMProvider, model: string) => void;
   resetUsageStats: () => void;
+
+  // API Keys (loaded from secure storage)
+  apiKeysLoaded: boolean;
+  loadApiKeys: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>()(
@@ -109,10 +115,22 @@ export const useAppStore = create<AppState>()(
 
       // Settings
       settings: DEFAULT_SETTINGS,
-      updateSettings: (newSettings) =>
+      updateSettings: (newSettings) => {
+        // Save API keys to secure storage (async, don't block)
+        if (newSettings.openaiApiKey !== undefined) {
+          apiKeyStore.setOpenAIKey(newSettings.openaiApiKey).catch(err => {
+            logger.error('Failed to save OpenAI API key to secure storage', err);
+          });
+        }
+        if (newSettings.anthropicApiKey !== undefined) {
+          apiKeyStore.setAnthropicKey(newSettings.anthropicApiKey).catch(err => {
+            logger.error('Failed to save Anthropic API key to secure storage', err);
+          });
+        }
         set((state) => ({
           settings: { ...state.settings, ...newSettings },
-        })),
+        }));
+      },
 
       // Recent Projects
       addRecentProject: (path: string) =>
@@ -210,11 +228,39 @@ export const useAppStore = create<AppState>()(
             lastResetAt: new Date().toISOString(),
           },
         }),
+
+      // API Keys from secure storage
+      apiKeysLoaded: false,
+      loadApiKeys: async () => {
+        try {
+          const [openaiKey, anthropicKey] = await Promise.all([
+            apiKeyStore.getOpenAIKey(),
+            apiKeyStore.getAnthropicKey(),
+          ]);
+          set((state) => ({
+            apiKeysLoaded: true,
+            settings: {
+              ...state.settings,
+              openaiApiKey: openaiKey || state.settings.openaiApiKey || '',
+              anthropicApiKey: anthropicKey || state.settings.anthropicApiKey || '',
+            },
+          }));
+          logger.debug('API keys loaded from secure storage');
+        } catch (err) {
+          logger.error('Failed to load API keys from secure storage', err);
+          set({ apiKeysLoaded: true }); // Mark as loaded even on error
+        }
+      },
     }),
     {
       name: 'aurora-voice-storage',
       partialize: (state) => ({
-        settings: state.settings,
+        // Exclude API keys from localStorage - they are stored in secure storage
+        settings: {
+          ...state.settings,
+          openaiApiKey: '', // Don't persist API keys to localStorage
+          anthropicApiKey: '', // Don't persist API keys to localStorage
+        },
         history: state.history,
         currentMode: state.currentMode,
         usageStats: state.usageStats,

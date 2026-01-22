@@ -8,9 +8,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '@/lib/store/settings';
 import { useMeetingStore } from '@/lib/store/meeting-store';
 import { useSpeakerStore } from '@/lib/store/speaker-store';
-import { useRecorder } from '@/hooks/use-recorder';
+import { useLiveTranscript } from '@/hooks/use-live-transcript';
 import { useHotkey } from '@/hooks/use-hotkey';
-import { transcribeAudioWithChunking } from '@/lib/ai/transcribe';
 import { enrichTranscript } from '@/lib/ai/enrich';
 import { GlassCard } from '@/components/ui/glass-card';
 import { AnimatedOrb } from '@/components/ui/animated-orb';
@@ -55,7 +54,49 @@ export default function Home() {
 
   const { speakers, loadSpeakers } = useSpeakerStore();
 
-  const { toggleRecording } = useRecorder();
+  // Ref to track live transcript text (to avoid stale closures)
+  const liveTranscriptRef = useRef<string>('');
+
+  // Live Transcription
+  const {
+    isRecording: isLiveRecording,
+    isPaused,
+    segments: liveSegments,
+    pendingChunks,
+    isSpeaking,
+    error: liveTranscriptError,
+    start: startLive,
+    stop: stopLive,
+    pause: pauseLive,
+    resume: resumeLive,
+  } = useLiveTranscript({
+    apiKey: settings.openaiApiKey,
+    language: settings.language,
+    onSegment: (segment) => {
+      // Segment-Text an Transkript anhängen
+      const newText = liveTranscriptRef.current
+        ? `${liveTranscriptRef.current} ${segment.text}`
+        : segment.text;
+      liveTranscriptRef.current = newText;
+      setTranscript(newText);
+      // Track transcription usage
+      addTranscriptionUsage((segment.endTime - segment.startTime) / 1000);
+    },
+  });
+
+  // Reset live transcript ref when starting new recording
+  useEffect(() => {
+    if (isLiveRecording && !transcript) {
+      liveTranscriptRef.current = '';
+    }
+  }, [isLiveRecording, transcript]);
+
+  // Sync live transcript error
+  useEffect(() => {
+    if (liveTranscriptError) {
+      setError(liveTranscriptError);
+    }
+  }, [liveTranscriptError, setError]);
   const [copied, setCopied] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [savedToObsidian, setSavedToObsidian] = useState(false);
@@ -63,7 +104,7 @@ export default function Home() {
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false); // Fix 1: Prevent race condition
   const pendingMeetingRef = useRef<string | null>(null);
   const isMountedRef = useRef(true); // Fix 3: Track mount state
-  const isCurrentlyRecording = recordingState === 'recording';
+  const isCurrentlyRecording = isLiveRecording; // Now uses live transcript state
 
   // Quick-Start form state
   const [meetingTitle, setMeetingTitle] = useState('');
@@ -145,51 +186,21 @@ export default function Home() {
     return { keyPoints, decisions, openQuestions };
   }, []);
 
-  // Process audio after recording stops
-  const processRecording = useCallback(
-    async (audioBlob: Blob, meetingId: string | null) => {
+  // Process after recording stops - transcript already exists from live transcription
+  const processAfterRecording = useCallback(
+    async (meetingId: string | null) => {
       try {
         // Fix 3: Check if component is still mounted before state updates
         if (!isMountedRef.current) return;
 
-        // Transcribe
-        setRecordingState('transcribing');
-        const result = await transcribeAudioWithChunking(
-          audioBlob,
-          settings.openaiApiKey,
-          settings.language
-        );
-
-        // Fix 3: Check mount state after async operation
-        if (!isMountedRef.current) return;
-
-        setTranscript(result.text);
-
-        // Track transcription usage
-        addTranscriptionUsage(result.duration || 0);
-
-        // Fix 6: Calculate proper timing using recordingStartTime
-        const segmentStartTime = recordingStartTime ? Date.now() - recordingStartTime - (result.duration || 0) : 0;
-        const segmentEndTime = recordingStartTime ? Date.now() - recordingStartTime : (result.duration || 0);
-
-        // Add transcript segment to meeting and save audio recording
-        if (meetingId) {
-          const segmentId = `segment-${Date.now()}`;
-          addTranscriptSegment({
-            speakerId: null,
-            confidence: 1,
-            confirmed: false,
-            text: result.text,
-            startTime: Math.max(0, segmentStartTime),
-            endTime: segmentEndTime,
-          });
-
-          // Save audio recording to IndexedDB
-          const durationMs = (result.duration || 0) * 1000;
-          await addRecording(meetingId, audioBlob, audioBlob.type, durationMs, [segmentId]);
+        // Skip if no transcript (shouldn't happen with live transcription)
+        if (!transcript) {
+          setError('Kein Transkript vorhanden.');
+          setRecordingState('idle');
+          return;
         }
 
-        // Fix 16: Enrich with timeout handling
+        // Only enrichment needed - transcription already happened during recording
         setRecordingState('enriching');
         setEnrichedContent('');
         setIsStreaming(true);
@@ -199,7 +210,7 @@ export default function Home() {
           // Create a timeout promise
           const timeoutMs = 60000; // 60 second timeout
           const enrichPromise = enrichTranscript({
-            transcript: result.text,
+            transcript,
             mode: currentMode,
             settings,
             onChunk: (chunk) => {
@@ -215,9 +226,9 @@ export default function Home() {
         } catch (enrichErr) {
           console.error('Enrichment failed:', enrichErr);
           // Use transcript as fallback if enrichment fails
-          fullContent = result.text;
+          fullContent = transcript;
           if (isMountedRef.current) {
-            setEnrichedContent(result.text);
+            setEnrichedContent(transcript);
           }
         }
 
@@ -226,7 +237,7 @@ export default function Home() {
 
         // Track enrichment usage
         addEnrichmentUsage(
-          result.text,
+          transcript,
           fullContent,
           settings.selectedProvider,
           settings.selectedModel
@@ -254,17 +265,29 @@ export default function Home() {
           router.push(`/meeting/room?id=${meetingId}`);
         }
 
-        // Add to history
+        // Add to history (duration is calculated from segments)
+        const totalDuration = liveSegments.reduce((acc, seg) => acc + (seg.endTime - seg.startTime), 0) / 1000;
         addToHistory({
           mode: currentMode,
-          originalTranscript: result.text,
+          originalTranscript: transcript,
           enrichedContent: fullContent,
           timestamp: new Date(),
-          duration: result.duration,
+          duration: totalDuration || 0,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Processing failed';
-        setError(message);
+
+        // Detailliertere Fehlermeldung für Netzwerkprobleme
+        if (message.toLowerCase().includes('network') || message.toLowerCase().includes('connection') || message.toLowerCase().includes('fetch')) {
+          setError('Netzwerkverbindung verloren. Bitte prüfe deine Internetverbindung und versuche es erneut.');
+        } else if (message.toLowerCase().includes('timeout') || message.toLowerCase().includes('aborted')) {
+          setError('Zeitüberschreitung. Die Datei ist möglicherweise zu groß oder die Verbindung zu langsam.');
+        } else if (message.toLowerCase().includes('retry') || message.toLowerCase().includes('retries')) {
+          setError('Mehrere Versuche fehlgeschlagen. Bitte prüfe deine Internetverbindung.');
+        } else {
+          setError(message);
+        }
+
         setRecordingState('idle');
         setIsStreaming(false);
       }
@@ -272,21 +295,17 @@ export default function Home() {
     [
       currentMode,
       settings,
-      recordingStartTime,
+      transcript,
       setRecordingState,
-      setTranscript,
       setEnrichedContent,
       appendEnrichedContent,
       setError,
       addToHistory,
-      addTranscriptSegment,
-      addRecording,
       endMeeting,
       setSummary,
       setActiveRoom,
       router,
       parseStructuredData,
-      addTranscriptionUsage,
       addEnrichmentUsage,
     ]
   );
@@ -315,15 +334,32 @@ export default function Home() {
     }
   }, [setError]);
 
-  // Handle toggle recording - auto-creates meeting when starting (Fix 1: Prevent race condition)
+  // Handle toggle recording with live transcription
   const handleToggleRecording = useCallback(async () => {
     // Fix 1: Prevent multiple meeting creations
     if (isCreatingMeeting) {
       return;
     }
 
-    // If starting recording, create a new meeting room first
-    if (!isCurrentlyRecording && !activeRoomId) {
+    // If currently recording, stop and process
+    if (isCurrentlyRecording) {
+      setRecordingState('recording'); // Keep UI in recording state while stopping
+      await stopLive();
+      // Recording stopped, process enrichment with the meeting ID
+      const meetingId = pendingMeetingRef.current || activeRoomId;
+      pendingMeetingRef.current = null;
+      processAfterRecording(meetingId);
+      return;
+    }
+
+    // Check if API key is available before starting
+    if (!settings.openaiApiKey) {
+      setError('OpenAI API-Key fehlt. Bitte in den Einstellungen hinterlegen.');
+      return;
+    }
+
+    // Starting recording - create a new meeting room first
+    if (!activeRoomId) {
       try {
         setIsCreatingMeeting(true);
         const meeting = await createRoomFromRecording({
@@ -344,14 +380,10 @@ export default function Home() {
       }
     }
 
-    const blob = await toggleRecording();
-    if (blob) {
-      // Recording stopped, process with the meeting ID
-      const meetingId = pendingMeetingRef.current || activeRoomId;
-      pendingMeetingRef.current = null;
-      processRecording(blob, meetingId);
-    }
-  }, [toggleRecording, processRecording, isCurrentlyRecording, activeRoomId, createRoomFromRecording, isCreatingMeeting, setError, meetingTitle, meetingDescription, selectedParticipants, projectPath, resetQuickStartForm]);
+    // Start live transcription
+    setRecordingState('recording');
+    await startLive();
+  }, [startLive, stopLive, processAfterRecording, isCurrentlyRecording, activeRoomId, createRoomFromRecording, isCreatingMeeting, setError, setRecordingState, meetingTitle, meetingDescription, selectedParticipants, projectPath, resetQuickStartForm, settings.openaiApiKey]);
 
   // Hotkey integration
   useHotkey(settings.hotkey, handleToggleRecording, {
@@ -519,6 +551,39 @@ export default function Home() {
             onClick={handleToggleRecording}
             disabled={isProcessing || isCreatingMeeting || !settings.openaiApiKey}
           />
+
+          {/* Live Transcription Status */}
+          {isCurrentlyRecording && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 flex items-center justify-center gap-3"
+            >
+              {isSpeaking && (
+                <span className="text-xs text-success flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+                  Spricht...
+                </span>
+              )}
+              {pendingChunks > 0 && (
+                <span className="text-xs text-foreground-secondary flex items-center gap-1">
+                  <span className="h-2 w-2 animate-spin rounded-full border border-primary border-t-transparent" />
+                  {pendingChunks} Chunk(s)
+                </span>
+              )}
+            </motion.div>
+          )}
+
+          {/* Status Text für Enrichment */}
+          {recordingState === 'enriching' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 text-sm text-foreground-secondary"
+            >
+              Generiere Zusammenfassung...
+            </motion.div>
+          )}
         </section>
 
         {/* Output Section */}

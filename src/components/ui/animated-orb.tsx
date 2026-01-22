@@ -1,7 +1,7 @@
 'use client';
 
 import { motion } from 'framer-motion';
-import { Mic, MicOff, Loader2 } from 'lucide-react';
+import { Mic, MicOff, Loader2, Pause } from 'lucide-react';
 import type { RecordingState } from '@/types';
 
 interface AnimatedOrbProps {
@@ -33,6 +33,7 @@ const sizeConfig = {
 const stateColors = {
   idle: 'from-primary to-secondary',
   recording: 'from-error to-warning',
+  paused: 'from-warning to-amber-400',
   processing: 'from-secondary to-primary',
   transcribing: 'from-primary to-success',
   enriching: 'from-success to-primary',
@@ -41,6 +42,7 @@ const stateColors = {
 const stateLabels = {
   idle: 'Klicken oder Hotkey zum Aufnehmen',
   recording: 'Aufnahme läuft...',
+  paused: 'Pausiert - Klicken zum Fortsetzen',
   processing: 'Verarbeitung...',
   transcribing: 'Transkribiere...',
   enriching: 'Analysiere...',
@@ -48,6 +50,7 @@ const stateLabels = {
 
 export function AnimatedOrb({ state, audioLevel = 0, onClick, disabled, size = 'lg' }: AnimatedOrbProps) {
   const isRecording = state === 'recording';
+  const isPaused = state === 'paused';
   const isProcessing = state === 'processing' || state === 'transcribing' || state === 'enriching';
   const sizes = sizeConfig[size];
 
@@ -63,23 +66,23 @@ export function AnimatedOrb({ state, audioLevel = 0, onClick, disabled, size = '
           relative flex ${sizes.outer} items-center justify-center rounded-full
           bg-gradient-to-br ${stateColors[state]}
           shadow-lg transition-shadow
-          ${isRecording ? 'orb-recording shadow-error/30' : isProcessing ? '' : 'orb-idle hover:shadow-xl'}
+          ${isRecording ? 'orb-recording shadow-error/30' : isPaused ? 'shadow-warning/30' : isProcessing ? '' : 'orb-idle hover:shadow-xl'}
           disabled:cursor-not-allowed disabled:opacity-50
         `}
         animate={{ scale }}
         transition={{ type: 'tween', duration: 0.1, ease: 'easeOut' }}
-        whileHover={!isProcessing && !isRecording ? { scale: 1.05 } : undefined}
+        whileHover={!isProcessing && !isRecording && !isPaused ? { scale: 1.05 } : undefined}
         whileTap={!isProcessing ? { scale: 0.95 } : undefined}
       >
         {/* Glow Effect */}
         <motion.div
           className={`absolute inset-0 rounded-full bg-gradient-to-br ${stateColors[state]} blur-xl`}
           animate={{
-            opacity: isRecording ? [0.4, 0.6, 0.4] : 0.3,
-            scale: isRecording ? [1, 1.1, 1] : 1,
+            opacity: isRecording ? [0.4, 0.6, 0.4] : isPaused ? [0.3, 0.5, 0.3] : 0.3,
+            scale: isRecording ? [1, 1.1, 1] : isPaused ? [1, 1.05, 1] : 1,
           }}
           transition={{
-            duration: isRecording ? 1.5 : 3,
+            duration: isRecording ? 1.5 : isPaused ? 2.5 : 3,
             repeat: Infinity,
             ease: 'easeInOut',
           }}
@@ -89,16 +92,18 @@ export function AnimatedOrb({ state, audioLevel = 0, onClick, disabled, size = '
         <motion.div
           className={`relative z-10 flex ${sizes.inner} items-center justify-center rounded-full bg-white/20 backdrop-blur-sm`}
           animate={{
-            scale: isRecording ? [1, 1.05, 1] : 1,
+            scale: isRecording ? [1, 1.05, 1] : isPaused ? [1, 1.02, 1] : 1,
           }}
           transition={{
-            duration: 1,
-            repeat: isRecording ? Infinity : 0,
+            duration: isRecording ? 1 : isPaused ? 2 : 0,
+            repeat: isRecording || isPaused ? Infinity : 0,
             ease: 'easeInOut',
           }}
         >
           {isProcessing ? (
             <Loader2 className={`${sizes.icon} animate-spin text-white`} />
+          ) : isPaused ? (
+            <Pause className={`${sizes.icon} text-white`} />
           ) : isRecording ? (
             <MicOff className={`${sizes.icon} text-white`} />
           ) : (

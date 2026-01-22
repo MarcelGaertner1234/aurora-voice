@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { Play, Pause, Download, Volume2, VolumeX, Trash2 } from 'lucide-react';
 import type { MeetingRecording } from '@/types/meeting';
+import { logger } from '@/lib/utils/logger';
 
 interface AudioPlayerProps {
   recording: MeetingRecording;
@@ -47,7 +48,7 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
     const mimeType = recording.mimeType || recording.blob.type;
     const canPlay = audio.canPlayType(mimeType);
 
-    console.log('Playback compatibility check:', {
+    logger.debug('Playback compatibility check:', {
       mimeType,
       blobType: recording.blob.type,
       canPlay,
@@ -61,20 +62,20 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
   const audioUrl = useMemo(() => {
     // Prefer Data URL (works in WebKit/Tauri without createObjectURL issues)
     if (recording.dataUrl) {
-      console.log('AudioPlayer: Using dataUrl for playback');
+      logger.debug('AudioPlayer: Using dataUrl for playback');
       return recording.dataUrl;
     }
 
     // Fallback to blob URL (for non-WebKit browsers or fresh recordings)
     if (recording.blob && recording.blob.size > 0) {
-      console.log('AudioPlayer: Creating URL for blob', {
+      logger.debug('AudioPlayer: Creating URL for blob', {
         size: recording.blob.size,
         type: recording.blob.type,
         mimeType: recording.mimeType,
       });
       return URL.createObjectURL(recording.blob);
     }
-    console.warn('AudioPlayer: Invalid or empty blob', {
+    logger.warn('AudioPlayer: Invalid or empty blob', {
       hasBlob: !!recording.blob,
       size: recording.blob?.size,
     });
@@ -91,7 +92,7 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
     // Check format compatibility early and set error if not supported
     if (recording.blob && !canPlayType) {
       const mimeType = recording.mimeType || recording.blob.type;
-      console.warn('Audio format not supported for playback:', mimeType);
+      logger.warn('Audio format not supported for playback:', mimeType);
       setAudioError(
         mimeType.includes('webm')
           ? 'Aufnahme konnte nicht konvertiert werden. Bitte löschen und neu aufnehmen.'
@@ -117,10 +118,10 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
           // Check readyState as additional validation
           const ready = audioRef.current.readyState >= 1; // HAVE_METADATA
           const hasDuration = audioRef.current.duration > 0 && isFinite(audioRef.current.duration);
-          console.log('AudioPlayer: Timeout fallback, readyState:', audioRef.current.readyState, 'duration:', audioRef.current.duration);
+          logger.debug('AudioPlayer: Timeout fallback, readyState:', audioRef.current.readyState, 'duration:', audioRef.current.duration);
           // Fix: Use stricter condition - require BOTH ready state AND valid duration
           if (ready && hasDuration) {
-            console.log('AudioPlayer: Enabling playback via timeout fallback');
+            logger.debug('AudioPlayer: Enabling playback via timeout fallback');
             setIsLoaded(true);
           }
         }
@@ -156,7 +157,7 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
         await audioRef.current.play();
         setIsPlaying(true);
       } catch (err) {
-        console.error('Failed to play audio:', err);
+        logger.error('Failed to play audio:', err);
         setAudioError('Audio kann nicht abgespielt werden');
         setIsPlaying(false);
       }
@@ -251,7 +252,7 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
         }
       }
 
-      console.warn('Audio playback error:', {
+      logger.warn('Audio playback error:', {
         code: mediaError?.code,
         message: mediaError?.message,
         blobSize: recording.blob.size,
