@@ -1,5 +1,7 @@
 // Audio Chunker for Streaming Transcription
 
+import { getSharedAudioContext } from './audio-context';
+
 export interface AudioChunk {
   id: string;
   blob: Blob;
@@ -181,14 +183,19 @@ export class AudioChunker {
         recorder.onstop = () => {
           const chunk = this.emitCurrentChunk(false);
 
-          // Restart if still running
-          if (this.isRunning && this.stream) {
-            this.mediaRecorder = new MediaRecorder(this.stream, {
-              mimeType: this.mimeType,
-              audioBitsPerSecond: 128000,
-            });
-            this.setupMediaRecorderHandlers();
-            this.mediaRecorder.start();
+          // Restart if still running and stream is still active
+          if (this.isRunning && this.stream && this.stream.active) {
+            try {
+              this.mediaRecorder = new MediaRecorder(this.stream, {
+                mimeType: this.mimeType,
+                audioBitsPerSecond: 128000,
+              });
+              this.setupMediaRecorderHandlers();
+              this.mediaRecorder.start();
+            } catch (err) {
+              console.error('[AudioChunker] Failed to restart MediaRecorder:', err);
+              this.isRunning = false;
+            }
           }
 
           this.scheduleChunkEmit();
@@ -395,7 +402,8 @@ export class SmartAudioChunker extends AudioChunker {
   }
 
   private setupVAD(stream: MediaStream): void {
-    this.audioContext = new AudioContext();
+    // Use shared audio context to prevent multiple instances
+    this.audioContext = getSharedAudioContext();
     this.analyser = this.audioContext.createAnalyser();
     this.analyser.fftSize = 256;
     this.analyser.smoothingTimeConstant = 0.8;
@@ -457,11 +465,9 @@ export class SmartAudioChunker extends AudioChunker {
       this.vadAnimationFrame = null;
     }
 
-    if (this.audioContext) {
-      await this.audioContext.close();
-      this.audioContext = null;
-    }
-
+    // Don't close the shared AudioContext - other components may still use it
+    // Just release our reference
+    this.audioContext = null;
     this.analyser = null;
 
     return super.stop();

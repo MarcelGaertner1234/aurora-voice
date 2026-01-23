@@ -57,6 +57,10 @@ export default function Home() {
   // Ref to track live transcript text (to avoid stale closures)
   const liveTranscriptRef = useRef<string>('');
 
+  // Refs for parallel audio recording (for persistence)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
   // Live Transcription
   const {
     isRecording: isLiveRecording,
@@ -79,6 +83,8 @@ export default function Home() {
         : segment.text;
       liveTranscriptRef.current = newText;
       setTranscript(newText);
+      // Persist segment to IndexedDB
+      addTranscriptSegment(segment);
       // Track transcription usage
       addTranscriptionUsage((segment.endTime - segment.startTime) / 1000);
     },
@@ -334,6 +340,46 @@ export default function Home() {
     }
   }, [setError]);
 
+  // Audio Recording functions for persistence (parallel to live transcription)
+  const startAudioRecording = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.start(1000); // Collect chunks every 1 second
+      mediaRecorderRef.current = mediaRecorder;
+    } catch (err) {
+      console.error('Failed to start audio recording:', err);
+    }
+  }, []);
+
+  const stopAudioRecording = useCallback((): Promise<Blob | null> => {
+    return new Promise((resolve) => {
+      const mediaRecorder = mediaRecorderRef.current;
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+        resolve(null);
+        return;
+      }
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType });
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        mediaRecorderRef.current = null;
+        audioChunksRef.current = [];
+        resolve(blob);
+      };
+
+      mediaRecorder.stop();
+    });
+  }, []);
+
   // Handle toggle recording with live transcription
   const handleToggleRecording = useCallback(async () => {
     // Fix 1: Prevent multiple meeting creations
@@ -345,8 +391,17 @@ export default function Home() {
     if (isCurrentlyRecording) {
       setRecordingState('recording'); // Keep UI in recording state while stopping
       await stopLive();
-      // Recording stopped, process enrichment with the meeting ID
+
+      // Stop audio recording and save to IndexedDB
+      const audioBlob = await stopAudioRecording();
       const meetingId = pendingMeetingRef.current || activeRoomId;
+
+      if (audioBlob && meetingId) {
+        const duration = liveSegments.reduce((acc, seg) => Math.max(acc, seg.endTime), 0) / 1000;
+        await addRecording(meetingId, audioBlob, audioBlob.type, duration);
+      }
+
+      // Recording stopped, process enrichment with the meeting ID
       pendingMeetingRef.current = null;
       processAfterRecording(meetingId);
       return;
@@ -383,7 +438,10 @@ export default function Home() {
     // Start live transcription
     setRecordingState('recording');
     await startLive();
-  }, [startLive, stopLive, processAfterRecording, isCurrentlyRecording, activeRoomId, createRoomFromRecording, isCreatingMeeting, setError, setRecordingState, meetingTitle, meetingDescription, selectedParticipants, projectPath, resetQuickStartForm, settings.openaiApiKey]);
+
+    // Start parallel audio recording for persistence
+    await startAudioRecording();
+  }, [startLive, stopLive, processAfterRecording, isCurrentlyRecording, activeRoomId, createRoomFromRecording, isCreatingMeeting, setError, setRecordingState, meetingTitle, meetingDescription, selectedParticipants, projectPath, resetQuickStartForm, settings.openaiApiKey, startAudioRecording, stopAudioRecording, liveSegments, addRecording]);
 
   // Hotkey integration
   useHotkey(settings.hotkey, handleToggleRecording, {
@@ -568,7 +626,7 @@ export default function Home() {
               {pendingChunks > 0 && (
                 <span className="text-xs text-foreground-secondary flex items-center gap-1">
                   <span className="h-2 w-2 animate-spin rounded-full border border-primary border-t-transparent" />
-                  {pendingChunks} Chunk(s)
+                  Transkribiere... ({pendingChunks} ausstehend)
                 </span>
               )}
             </motion.div>

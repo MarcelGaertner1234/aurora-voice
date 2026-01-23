@@ -223,6 +223,7 @@ function parseMeetingSummary(text: string, meetingId: string): MeetingSummary {
     keyPoints: [],
     decisions: [],
     openQuestions: [],
+    actionItems: [],
     generatedAt: new Date(),
   };
 
@@ -246,8 +247,10 @@ function parseMeetingSummary(text: string, meetingId: string): MeetingSummary {
       currentSection = 'openQuestions';
       continue;
     }
-    if (trimmedLine.startsWith('## Action Items') || trimmedLine.toLowerCase().includes('action items')) {
-      currentSection = 'actionItems'; // Skip, handled by task extractor
+    if (trimmedLine.startsWith('## Action Items') || trimmedLine.toLowerCase().includes('action items') ||
+        trimmedLine.startsWith('## Aufgaben') || trimmedLine.startsWith('## Nächste Schritte') ||
+        trimmedLine.toLowerCase().includes('next steps')) {
+      currentSection = 'actionItems';
       continue;
     }
 
@@ -292,6 +295,26 @@ function parseMeetingSummary(text: string, meetingId: string): MeetingSummary {
           });
         }
         break;
+
+      case 'actionItems':
+        if (bulletContent) {
+          // Parse: "Task text (Verantwortlich: Name)" or "Task text (@Name)"
+          const assigneeMatch = bulletContent.match(
+            /(.+?)(?:\s*\((?:Verantwortlich|Assignee|Zuständig):\s*(.+?)\)|\s*\(@(.+?)\))?\s*$/i
+          );
+          const text = assigneeMatch ? assigneeMatch[1].trim() : bulletContent;
+          const assignee = assigneeMatch ? (assigneeMatch[2] || assigneeMatch[3])?.trim() : undefined;
+
+          if (text.length >= 3) {
+            summary.actionItems!.push({
+              id: uuidv4(),
+              text,
+              assigneeName: assignee,
+              timestamp: Date.now(),
+            });
+          }
+        }
+        break;
     }
   }
 
@@ -327,14 +350,53 @@ export async function extractAndCreateTasks(
     context
   );
 
+  // Combine with action items from summary (if available)
+  const allTasksToCreate: Array<{
+    title: string;
+    assigneeName?: string;
+    priority: 'low' | 'medium' | 'high' | 'urgent';
+    sourceText?: string;
+  }> = [];
+
+  // Add AI-extracted tasks from transcript
+  const seenTitles = new Set<string>();
+  for (const task of extractedTasks) {
+    const prefix = task.title.toLowerCase().slice(0, 25);
+    if (!seenTitles.has(prefix)) {
+      seenTitles.add(prefix);
+      allTasksToCreate.push({
+        title: task.title,
+        assigneeName: task.assigneeName,
+        priority: task.priority,
+        sourceText: task.sourceText,
+      });
+    }
+  }
+
+  // Add action items from summary (avoid duplicates)
+  if (meeting.summary?.actionItems && meeting.summary.actionItems.length > 0) {
+    for (const actionItem of meeting.summary.actionItems) {
+      const prefix = actionItem.text.toLowerCase().slice(0, 25);
+      if (!seenTitles.has(prefix)) {
+        seenTitles.add(prefix);
+        allTasksToCreate.push({
+          title: actionItem.text,
+          assigneeName: actionItem.assigneeName,
+          priority: 'medium', // Default priority for action items
+          sourceText: actionItem.text,
+        });
+      }
+    }
+  }
+
   // Create tasks in store
   const createdTasks = await taskStore.createTasks(
-    extractedTasks.map((extracted) => ({
+    allTasksToCreate.map((task) => ({
       meetingId,
-      title: extracted.title,
-      assigneeName: extracted.assigneeName,
-      priority: extracted.priority,
-      sourceText: extracted.sourceText,
+      title: task.title,
+      assigneeName: task.assigneeName,
+      priority: task.priority,
+      sourceText: task.sourceText,
     }))
   );
 

@@ -2,6 +2,10 @@
 
 import type { TranscriptSegment } from '@/types/meeting';
 
+// Maximum segments to keep in live state (~16 minutes at 5s chunks)
+// Older segments are already persisted to DB, we only need recent ones for UI context
+const MAX_LIVE_SEGMENTS = 200;
+
 // Keyword categories for highlighting
 export interface KeywordCategory {
   id: string;
@@ -292,12 +296,22 @@ export function processSegment(
   // Create segment ID if not present
   const segmentId = `segment-${segment.startTime}`;
 
+  // Limit segments to MAX_LIVE_SEGMENTS (older ones are persisted to DB)
+  const newSegments = [...state.segments, segment].slice(-MAX_LIVE_SEGMENTS);
+
+  // Clean up keywordMatches to only keep matches for active segments
+  const activeSegmentIds = new Set(newSegments.map(s => `segment-${s.startTime}`));
+  const filteredKeywords = new Map(
+    [...state.keywordMatches].filter(([id]) => activeSegmentIds.has(id))
+  );
+  filteredKeywords.set(segmentId, keywords);
+
   return {
     ...state,
-    segments: [...state.segments, segment],
+    segments: newSegments,
     decisions: decision ? [...state.decisions, decision] : state.decisions,
     questions: [...state.questions, ...questions],
-    keywordMatches: new Map(state.keywordMatches).set(segmentId, keywords),
+    keywordMatches: filteredKeywords,
     speakerChanges: state.speakerChanges + (speakerChanged ? 1 : 0),
     wordCount: state.wordCount + words,
   };

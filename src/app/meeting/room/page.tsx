@@ -1036,8 +1036,22 @@ function MeetingRoomContent() {
           setIsStreaming(true);
           setEnrichedContent('');
 
+          // Create virtual meeting with ONLY follow-up segments to avoid duplicates
+          // The AI should only analyze new content, not re-analyze existing segments
+          const followUpOnlyMeeting: Meeting = {
+            ...updatedMeeting,
+            transcript: updatedMeeting.transcript ? {
+              ...updatedMeeting.transcript,
+              segments: followUpSegments,
+              fullText: followUpSegments.map(s => s.text).join(' '),
+              duration: followUpSegments.length > 0
+                ? followUpSegments[followUpSegments.length - 1].endTime - followUpSegments[0].startTime
+                : 0
+            } : undefined,
+          };
+
           const postResult = await processPostMeeting(
-            updatedMeeting,
+            followUpOnlyMeeting,
             speakers,
             settings,
             (stage, progress) => {

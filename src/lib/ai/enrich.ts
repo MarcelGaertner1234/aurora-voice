@@ -5,10 +5,10 @@ import type { Mode, LLMProvider, Settings } from '@/types';
 import { MODE_CONFIG } from '@/types';
 import { processStreamWithTimeout } from './stream-utils';
 
-// Safe limit: 20MB to leave room for prompt overhead (API limit is 25MB)
-const MAX_TRANSCRIPT_SIZE = 20 * 1024 * 1024;
-// Target chunk size: 500KB for good balance between context and API limits
-export const CHUNK_SIZE = 500 * 1024;
+// Safe limit: 200MB for very long transcripts
+const MAX_TRANSCRIPT_SIZE = 200 * 1024 * 1024;
+// Target chunk size: 1MB for better balance between API calls and context
+export const CHUNK_SIZE = 1024 * 1024;
 
 interface EnrichOptions {
   transcript: string;
@@ -92,7 +92,17 @@ async function processChunk(
 
   // Use chunk-specific prompt for multi-chunk processing
   const chunkPrompt = totalChunks > 1
-    ? `Du verarbeitest Teil ${chunkIndex + 1} von ${totalChunks} eines längeren Transkripts.\n\nExtrahiere die wichtigsten Informationen aus diesem Teil:\n- Hauptthemen und Diskussionspunkte\n- Getroffene Entscheidungen\n- Offene Fragen\n- Action Items\n\nTranskript-Teil:\n\n${chunk}`
+    ? `Du verarbeitest Teil ${chunkIndex + 1} von ${totalChunks} eines längeren Transkripts.
+
+Extrahiere die wichtigsten Informationen aus diesem Teil:
+- Hauptthemen und Diskussionspunkte
+- Getroffene Entscheidungen (NUR explizite Beschlüsse, keine Vorschläge)
+- Offene Fragen (NUR unbeantwortete Fragen)
+- Action Items (mit Verantwortlichen, falls genannt)
+
+Transkript-Teil:
+
+${chunk}`
     : (customPrompt ? `${customPrompt}\n\n${chunk}` : `${config.prompt}\n\n${chunk}`);
 
   const { textStream } = streamText({

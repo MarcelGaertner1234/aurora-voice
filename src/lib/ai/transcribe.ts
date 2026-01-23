@@ -6,7 +6,29 @@ const WHISPER_MAX_SIZE = 24 * 1024 * 1024;
 const CHUNK_DURATION_MS = 60000; // 1 Minute pro Chunk
 const CHUNK_TIMEOUT_MS = 180000; // 180 Sekunden Timeout (erhöht für lange Aufnahmen)
 const PARALLEL_CHUNKS = 3; // Parallele Chunk-Verarbeitung
-const MAX_RETRIES = 3; // Maximale Wiederholungsversuche
+const MAX_RETRIES = 3; // Default retries for most errors
+const MAX_RETRIES_RATE_LIMIT = 5; // More retries for rate limiting (429)
+
+// HTTP status codes that are worth retrying
+const RETRIABLE_STATUS_CODES = [429, 500, 502, 503, 504];
+
+/**
+ * Custom error class that includes HTTP status code for smart retry logic
+ */
+class TranscriptionError extends Error {
+  constructor(message: string, public readonly statusCode?: number) {
+    super(message);
+    this.name = 'TranscriptionError';
+  }
+
+  get isRetriable(): boolean {
+    return this.statusCode !== undefined && RETRIABLE_STATUS_CODES.includes(this.statusCode);
+  }
+
+  get isRateLimited(): boolean {
+    return this.statusCode === 429;
+  }
+}
 
 // Convert audio blob to WAV for Whisper API compatibility
 // Safari/WebKit's MediaRecorder produces MP4 that Whisper may not parse correctly
@@ -79,7 +101,8 @@ async function transcribeWavDirect(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
-    throw new Error(error.error?.message || `Transcription failed: ${response.statusText}`);
+    const message = error.error?.message || `Transcription failed: ${response.statusText}`;
+    throw new TranscriptionError(message, response.status);
   }
 
   const result = await response.json();
@@ -92,27 +115,47 @@ async function transcribeWavDirect(
   };
 }
 
-// Retry wrapper with exponential backoff for network resilience
+// Retry wrapper with exponential backoff and HTTP status-aware logic
 async function transcribeWithRetry(
   chunk: Blob,
   apiKey: string,
   language?: string
 ): Promise<TranscriptionResult> {
   let lastError: Error | null = null;
+  let maxRetries = MAX_RETRIES;
 
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await transcribeWavDirect(chunk, apiKey, language);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      console.warn(`Transcription attempt ${attempt + 1}/${MAX_RETRIES} failed:`, lastError.message);
+
+      // Check if this is a TranscriptionError with HTTP status info
+      if (lastError instanceof TranscriptionError) {
+        // Non-retriable errors (400, 401, 403, 404, etc.) - fail immediately
+        if (!lastError.isRetriable) {
+          console.error(`Non-retriable error (HTTP ${lastError.statusCode}):`, lastError.message);
+          throw lastError;
+        }
+
+        // Rate limit (429) - use more retries
+        if (lastError.isRateLimited) {
+          maxRetries = MAX_RETRIES_RATE_LIMIT;
+          console.warn(`Rate limited (429). Using extended retries (${maxRetries} total).`);
+        }
+      }
+
+      console.warn(`Transcription attempt ${attempt + 1}/${maxRetries} failed:`, lastError.message);
 
       // Don't retry on last attempt
-      if (attempt === MAX_RETRIES - 1) break;
+      if (attempt === maxRetries - 1) break;
 
-      // Exponential backoff: 1s, 2s, 4s
-      const delay = Math.pow(2, attempt) * 1000;
-      console.log(`Retrying in ${delay}ms...`);
+      // Exponential backoff with jitter: (1s + random), (2s + random), (4s + random)
+      // Jitter prevents "thundering herd" when multiple requests retry simultaneously
+      const baseDelay = Math.pow(2, attempt) * 1000;
+      const jitter = Math.random() * 1000; // 0-1000ms random jitter
+      const delay = baseDelay + jitter;
+      console.log(`Retrying in ${Math.round(delay)}ms (base: ${baseDelay}ms, jitter: ${Math.round(jitter)}ms)...`);
       await new Promise(r => setTimeout(r, delay));
     }
   }

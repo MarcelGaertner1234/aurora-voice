@@ -12,26 +12,60 @@ import { splitTranscriptIntoChunks, CHUNK_SIZE } from '@/lib/ai/enrich';
 // Prompt for task extraction
 const TASK_EXTRACTION_PROMPT = `Du bist ein Experte für das Extrahieren von Aufgaben aus Meeting-Transkripten.
 
-Analysiere das Transkript und extrahiere ALLE Aufgaben - sowohl explizite als auch implizite:
+**WICHTIGE REGEL - Nur ZUKÜNFTIGE Aufgaben:**
+Extrahiere NUR Aufgaben die NACH dem Meeting erledigt werden müssen.
+Wenn etwas IM Meeting bereits erledigt wurde, ist es KEINE Aufgabe.
+
+**BEISPIELE:**
+❌ FALSCH (bereits erledigt):
+Meeting-Inhalt: "Ich stelle Ihnen heute die Homeoffice-Regelung vor" [Präsentation folgt]
+→ KEINE Aufgabe - wurde im Meeting erledigt
+
+❌ FALSCH (bereits diskutiert):
+Meeting-Inhalt: "Lassen Sie uns die Bedenken besprechen" [Diskussion folgt]
+→ KEINE Aufgabe - wurde im Meeting erledigt
+
+✅ RICHTIG (zukünftige Aufgabe):
+Meeting-Inhalt: "Wir werden Pilotprojekte starten"
+→ Aufgabe: "Pilotprojekte in ausgewählten Abteilungen starten"
+
+✅ RICHTIG (Follow-up erforderlich):
+Meeting-Inhalt: "Wir informieren Sie über die Ergebnisse"
+→ Aufgabe: "Ergebnisse der Pilotprojekte kommunizieren"
+
+Analysiere das Transkript und extrahiere ALLE zukünftigen Aufgaben - sowohl explizite als auch implizite:
 
 **Explizite Aufgaben:**
 - "Wir sollten...", "Müssen wir...", "Kannst du..."
 - Action Items, To-Dos, direkte Anweisungen
 - Klar genannte Verantwortlichkeiten
 
-**Implizite Aufgaben (WICHTIG!):**
+**Implizite Aufgaben:**
 Erkenne Handlungsbedarf aus dem Kontext:
 - Bestellungen → Aufgabe: "Bestellung aufgeben bei [Lieferant]"
-- Einkaufslisten → Aufgabe: "Produkte beschaffen"
 - Termine/Events → Aufgabe: "Termin organisieren/vorbereiten"
 - Probleme → Aufgabe: "Problem lösen/untersuchen"
-- Projekte → Einzelschritte ableiten
-- Mengenangaben/Listen → Aufgabe: "Liste zusammenstellen/bestellen"
-- Lieferanten erwähnt → Aufgabe: "Lieferant kontaktieren"
+
+**DEDUPLIZIERUNG - STRIKT:**
+Erstelle für jedes THEMA nur EINE Aufgabe, auch wenn es mehrfach erwähnt wird.
+
+Beispiele für DUPLIKATE die zusammengefasst werden MÜSSEN:
+- "Arbeitsgruppe einrichten" = "Bildung der Arbeitsgruppe" = "Arbeitsgruppe bilden" = "Bildung und Einrichtung der Arbeitsgruppe"
+  → NUR EINE Aufgabe: "Arbeitsgruppe einrichten"
+- "Pilotprojekte starten" = "Pilotprojekte durchführen" = "Pilotprojekte planen" = "Pilotprojekte evaluieren"
+  → NUR EINE Aufgabe: "Pilotprojekte in ausgewählten Abteilungen durchführen"
+- "Schulungen entwickeln" = "Schulungsprogramme erstellen" = "Führungskräfte schulen" = "Training durchführen"
+  → NUR EINE Aufgabe: "Schulungsprogramm für Führungskräfte entwickeln"
+- "Zeiterfassung einführen" = "Zeiterfassungssystem implementieren" = "Arbeitszeit dokumentieren"
+  → NUR EINE Aufgabe: "Zeiterfassungssystem implementieren"
+- "Richtlinien erstellen" = "Regelwerk definieren" = "Guidelines entwickeln" = "Kommunikationsregeln festlegen"
+  → NUR EINE Aufgabe: "Richtlinien und Regelwerk erstellen"
+
+WICHTIG: Prüfe VOR dem Hinzufügen jeder Aufgabe, ob bereits eine ähnliche existiert!
 
 Für jede Aufgabe erstelle:
 {
-  "title": "Aufgabentitel (klar und handlungsorientiert)",
+  "title": "Aufgabentitel (handlungsorientiert)",
   "assigneeName": "Name der Person oder null",
   "dueDate": "Deadline als Text oder null",
   "priority": "high" | "medium" | "low",
@@ -42,9 +76,8 @@ Für jede Aufgabe erstelle:
 }
 
 Regeln:
-- Extrahiere SOWOHL explizite ALS AUCH implizite Aufgaben
-- Bei Bestellungen/Listen: Hauptaufgabe "Bestellung aufgeben" mit hoher Priorität
-- Bei fehlendem Lieferanten: Zusätzlich "Lieferant auswählen/kontaktieren"
+- NUR Aufgaben für NACH dem Meeting, nicht bereits Erledigtes
+- Bei ähnlichen Aufgaben: ZU EINER zusammenfassen (keine Duplikate)
 - Setze confidence: 0.8-1.0 für explicit, 0.5-0.8 für implicit
 - Wenn keine Aufgaben gefunden werden, antworte mit []
 - Antworte NUR mit dem JSON-Array, keine Erklärungen

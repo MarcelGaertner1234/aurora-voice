@@ -62,11 +62,19 @@ export interface MeetingQuestion {
   assigneeName?: string; // responsible person name
 }
 
+export interface MeetingActionItem {
+  id: string;
+  text: string;
+  assigneeName?: string;
+  timestamp: number;
+}
+
 export interface MeetingSummary {
   overview: string;
   keyPoints: string[];
   decisions: MeetingDecision[];
   openQuestions: MeetingQuestion[];
+  actionItems?: MeetingActionItem[]; // Action items from summary (optional for backward compatibility)
   generatedAt: Date;
 }
 

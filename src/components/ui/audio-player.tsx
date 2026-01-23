@@ -12,6 +12,9 @@ interface AudioPlayerProps {
 }
 
 function formatDuration(durationValue: number): string {
+  if (!Number.isFinite(durationValue) || durationValue <= 0) {
+    return '0:00';
+  }
   const ms = normalizeDuration(durationValue);
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -20,6 +23,9 @@ function formatDuration(durationValue: number): string {
 }
 
 function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return '0:00';
+  }
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -140,7 +146,7 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
 
   // Handle duration change
   const handleDurationChange = useCallback(() => {
-    if (audioRef.current) {
+    if (audioRef.current && Number.isFinite(audioRef.current.duration)) {
       setDuration(audioRef.current.duration);
     }
   }, []);
@@ -166,7 +172,7 @@ export function AudioPlayer({ recording, onDownload, onDelete }: AudioPlayerProp
 
   // Handle seek
   const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!audioRef.current || duration === 0) return;
+    if (!audioRef.current || !Number.isFinite(duration) || duration <= 0) return;
 
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -399,7 +405,7 @@ export function AudioPlayerCompact({ recording, index, onDownload, onDelete }: A
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-foreground-secondary">
         <span className="font-medium">Aufnahme {index + 1}</span>
-        <span>{formattedDateTime} - {formatDuration(recording.duration)}</span>
+        <span>{formattedDateTime} · Dauer: {formatDuration(recording.duration)}</span>
       </div>
       <AudioPlayer recording={recording} onDownload={onDownload} onDelete={onDelete} />
     </div>

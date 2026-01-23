@@ -45,10 +45,10 @@ import {
   formatAbsoluteTimestamp,
   startMeetingSession,
   endMeetingSession,
-  generateMeetingSummary,
   extractAndCreateTasks,
   exportMeetingToMarkdown,
 } from '@/lib/meetings/engine';
+import { processPostMeeting } from '@/lib/meetings/post';
 import {
   confirmSpeakerAssignment,
   rejectSpeakerSuggestion,
@@ -206,8 +206,9 @@ function LiveMeetingContent() {
     startMeeting,
     setRecording,
     addRecording,
+    setSummary,
   } = useMeetingStore();
-  const { loadTasksForMeeting, completeTask, reopenTask } = useTaskStore();
+  const { loadTasksForMeeting, completeTask, reopenTask, createTask } = useTaskStore();
   const { speakers, loadSpeakers, createSpeaker } = useSpeakerStore();
   const { getOrIndexProject, getCachedProject } = useProjectStore();
 
@@ -372,19 +373,51 @@ function LiveMeetingContent() {
     }
   }, [meetingId, endMeeting, setRecording]);
 
-  // Handle generate summary
+  // Handle generate summary - using enhanced processPostMeeting
   const handleGenerateSummary = useCallback(async () => {
-    if (!meetingId) return;
+    if (!meetingId || !currentMeeting) return;
     try {
       setIsGeneratingSummary(true);
-      await generateMeetingSummary(meetingId, settings);
+
+      // Use the new enhanced processPostMeeting function
+      const { summary, tasks } = await processPostMeeting(
+        currentMeeting,
+        speakers,
+        settings,
+        (stage, progress) => {
+          console.log(`[Post-Meeting] ${stage} (${Math.round(progress * 100)}%)`);
+        },
+        projectContext
+      );
+
+      // Save the summary to the meeting store
+      await setSummary(meetingId, summary);
+
+      // Create tasks from extracted tasks
+      if (tasks.length > 0) {
+        for (const task of tasks) {
+          try {
+            await createTask({
+              title: task.title,
+              meetingId,
+              assigneeName: task.assigneeName,
+              priority: task.priority || 'medium',
+            });
+          } catch (taskErr) {
+            console.warn('[Meeting] Failed to create task:', taskErr);
+          }
+        }
+        const updatedTasks = await loadTasksForMeeting(meetingId);
+        setMeetingTasks(updatedTasks);
+      }
+
       await setCurrentMeeting(meetingId); // Reload meeting with summary
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate summary');
     } finally {
       setIsGeneratingSummary(false);
     }
-  }, [meetingId, settings, setCurrentMeeting]);
+  }, [meetingId, currentMeeting, speakers, settings, projectContext, setSummary, createTask, loadTasksForMeeting, setCurrentMeeting]);
 
   // Handle extract tasks
   const handleExtractTasks = useCallback(async () => {
@@ -482,7 +515,9 @@ function LiveMeetingContent() {
   // Render states
   const isLive = currentMeeting?.status === 'in-progress';
   const isCompleted = currentMeeting?.status === 'completed';
-  const hasTranscript = liveTranscript.length > 0 || currentMeeting?.transcript;
+  // Consistent check: live transcript or saved segments exist
+  const hasTranscript = liveTranscript.length > 0 ||
+                        (currentMeeting?.transcript?.segments?.length ?? 0) > 0;
   const hasSummary = currentMeeting?.summary;
 
   if (!meetingId) {
@@ -651,11 +686,11 @@ function LiveMeetingContent() {
                       </span>
                     )}
 
-                    {/* Pending Chunks */}
+                    {/* Pending Chunks - Shows transcription queue status */}
                     {pendingChunks > 0 && (
                       <span className="flex items-center gap-1.5 text-xs text-foreground-secondary">
                         <div className="h-2 w-2 animate-spin rounded-full border border-primary border-t-transparent" />
-                        {pendingChunks} Chunk(s) in Verarbeitung
+                        Transkribiere... ({pendingChunks} ausstehend)
                       </span>
                     )}
 

@@ -401,6 +401,21 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
         }
       }
 
+      // Reconstruct fullText from segments if empty (fix for transcript not showing after reload)
+      if (meeting.transcript && meeting.transcript.segments && meeting.transcript.segments.length > 0 &&
+          (!meeting.transcript.fullText || meeting.transcript.fullText.trim() === '')) {
+        meeting = {
+          ...meeting,
+          transcript: {
+            ...meeting.transcript,
+            fullText: meeting.transcript.segments.map(s => s.text).join(' '),
+          },
+        };
+        // Save reconstructed fullText to DB
+        const provider = getStorageProvider();
+        await provider.saveMeeting(meeting);
+      }
+
       // Update state
       set((state) => ({
         currentMeetingId: id,
@@ -453,26 +468,38 @@ export const useMeetingStore = create<MeetingState>((set, get) => ({
       throw new Error('Meeting not found');
     }
 
-    const { recordingStartTime } = get();
+    const endedAt = new Date();
 
-    // Segments are already saved to IndexedDB by addTranscriptSegment
-    // We only need to update duration and meeting status
-    const existingDuration = meeting.transcript?.duration || 0;
-    const newDuration = recordingStartTime ? Date.now() - recordingStartTime : 0;
+    // Calculate duration using multiple methods for accuracy:
+    // 1. From transcript segments (most accurate if present)
+    // 2. From startedAt to endedAt (fallback)
+    let finalDuration = 0;
+
+    if (meeting.transcript?.segments && meeting.transcript.segments.length > 0) {
+      // Method 1: Use the last segment's endTime as the total duration
+      const segments = meeting.transcript.segments;
+      const lastSegmentEndTime = Math.max(...segments.map(s => s.endTime));
+      finalDuration = lastSegmentEndTime;
+      logger.debug(`Duration from segments: ${finalDuration}ms (${Math.round(finalDuration / 60000)} min)`);
+    } else if (meeting.startedAt) {
+      // Method 2: Calculate from startedAt to now
+      finalDuration = endedAt.getTime() - meeting.startedAt.getTime();
+      logger.debug(`Duration from startedAt: ${finalDuration}ms (${Math.round(finalDuration / 60000)} min)`);
+    }
 
     // Update transcript duration if transcript exists (segments already in DB)
     const transcript: Transcript | undefined = meeting.transcript ? {
       ...meeting.transcript,
-      duration: existingDuration + newDuration,
+      duration: finalDuration,
     } : undefined;
 
     const updated: Meeting = {
       ...meeting,
       phase: 'post',
       status: 'completed',
-      endedAt: new Date(),
+      endedAt,
       transcript,
-      updatedAt: new Date(),
+      updatedAt: endedAt,
     };
 
     try {

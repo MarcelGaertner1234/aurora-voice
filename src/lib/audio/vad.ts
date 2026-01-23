@@ -1,5 +1,7 @@
 // Voice Activity Detection for Aurora Meeting Assistant
 
+import { getSharedAudioContext } from './audio-context';
+
 export interface VADOptions {
   /** Threshold for detecting speech (0-1, default: 0.15) */
   speechThreshold?: number;
@@ -84,8 +86,8 @@ export class VoiceActivityDetector {
         },
       });
 
-      // Set up audio context
-      this.audioContext = new AudioContext();
+      // Use shared audio context to prevent multiple instances
+      this.audioContext = getSharedAudioContext();
       this.analyser = this.audioContext.createAnalyser();
       this.analyser.fftSize = 512;
       this.analyser.smoothingTimeConstant = 0.5;
@@ -115,11 +117,9 @@ export class VoiceActivityDetector {
       this.stream = null;
     }
 
-    if (this.audioContext) {
-      this.audioContext.close();
-      this.audioContext = null;
-    }
-
+    // Don't close the shared AudioContext - other components may still use it
+    // Just release our reference
+    this.audioContext = null;
     this.analyser = null;
     this.voiceFrequencyWeights = null;
 

@@ -21,6 +21,52 @@ import type {
 import type { Task, ExtractedTask } from '@/types/task';
 import type { SpeakerProfile } from '@/types/speaker';
 
+// Semantic keyword clusters for task deduplication
+// Tasks containing keywords from the same cluster are considered duplicates
+const TASK_DEDUP_KEYWORD_CLUSTERS = [
+  ['arbeitsgruppe', 'bildung', 'einrichten', 'einrichtung', 'gründen', 'gründung'],
+  ['pilotprojekt', 'pilot', 'testphase', 'evaluieren', 'testen', 'pilotphase'],
+  ['schulung', 'training', 'fortbildung', 'qualifizierung', 'führungskräfte schulen', 'weiterbildung'],
+  ['zeiterfassung', 'arbeitszeit', 'erfassung', 'dokumentation', 'stundenerfassung'],
+  ['richtlinien', 'regelwerk', 'guidelines', 'kommunikationsregeln', 'leitfaden', 'policy'],
+  ['feedback', 'rückmeldung', 'evaluation', 'bewertung', 'umfrage'],
+  ['kommunikation', 'informieren', 'bekanntgeben', 'mitteilen', 'kommunizieren'],
+];
+
+/**
+ * Deduplicate tasks semantically using keyword clusters
+ * Tasks matching the same keyword cluster are considered duplicates - only the first is kept
+ */
+function deduplicateTasksSemantically(tasks: ExtractedTask[]): ExtractedTask[] {
+  const seen = new Map<number, ExtractedTask>();
+  const nonClusteredTasks: ExtractedTask[] = [];
+
+  for (const task of tasks) {
+    const titleLower = task.title.toLowerCase();
+    let matchedClusterIndex = -1;
+
+    // Find matching keyword cluster
+    for (let i = 0; i < TASK_DEDUP_KEYWORD_CLUSTERS.length; i++) {
+      if (TASK_DEDUP_KEYWORD_CLUSTERS[i].some(kw => titleLower.includes(kw))) {
+        matchedClusterIndex = i;
+        break;
+      }
+    }
+
+    if (matchedClusterIndex === -1) {
+      // No cluster match - add to non-clustered list
+      nonClusteredTasks.push(task);
+    } else if (!seen.has(matchedClusterIndex)) {
+      // First task in this cluster - keep it
+      seen.set(matchedClusterIndex, task);
+    }
+    // Else: Duplicate in cluster - skip
+  }
+
+  // Combine clustered and non-clustered tasks
+  return [...Array.from(seen.values()), ...nonClusteredTasks];
+}
+
 function getModel(settings: Settings) {
   const { selectedProvider, selectedModel, openaiApiKey, anthropicApiKey, ollamaBaseUrl } = settings;
 
@@ -96,6 +142,11 @@ JSON-Format:
   "concerns": ["Bedenken oder Risiken falls erwähnt"]
 }
 
+**WICHTIG für openQuestions:**
+- NUR Fragen die im Transkript NICHT beantwortet wurden
+- Wenn eine Frage gestellt und später beantwortet wird → NICHT als offen listen
+- Prüfe das GESAMTE Transkript auf Antworten
+
 Regeln:
 - Bei Bestellungen/Listen: Prüfe auf fehlende Angaben (Menge, Einheit, Lieferant, Preis, Deadline)
 - Fehlende Angaben → implizite Fragen UND pending Entscheidungen erstellen
@@ -161,41 +212,70 @@ Regeln:
 // Question extraction prompt
 const QUESTION_EXTRACTION_PROMPT = `Analysiere das Meeting-Transkript und extrahiere offene Fragen:
 
+**DEFINITION "BEANTWORTET" - WICHTIG:**
+Eine Frage gilt als BEANTWORTET wenn im Transkript:
+- Eine konkrete Lösung/Maßnahme genannt wurde
+- Ein Beschluss gefasst wurde
+- Ein Plan/Vorgehen definiert wurde
+- Jemand die Verantwortung übernommen hat
+- Konkrete Schritte zur Lösung besprochen wurden
+
+**KRITISCHE BEISPIELE - Diese Fragen sind NICHT offen:**
+
+❌ FALSCH: "Wie stellen wir Einhaltung des Arbeitszeitgesetzes sicher?"
+Wenn im Transkript steht: "Juristische Prüfung bereits initiiert", "Moderne Zeiterfassungssysteme"
+→ NICHT offen - konkrete Maßnahmen wurden genannt (juristische Prüfung + Zeiterfassung)
+
+❌ FALSCH: "Wie sichern wir Teamkohäsion/soziale Interaktionen?"
+Wenn im Transkript steht: "Anker-Tage definieren", "Verpflichtende Teamtage"
+→ NICHT offen - Lösungsansätze wurden besprochen (Anker-Tage, Teamtage)
+
+❌ FALSCH: "Wer übernimmt die Kosten?"
+Wenn im Transkript steht: "Das Unternehmen stellt Laptop und zahlt Zulage"
+→ NICHT offen - wurde beantwortet
+
+✅ RICHTIG (Frage bleibt offen):
+Transkript: "Wann genau starten wir?" [keine Antwort, kein Zeitplan, keine Festlegung]
+→ Offene Frage: "Wann genau starten wir?"
+
+**PRÜF-SCHEMA für jede potentielle offene Frage:**
+1. Wurde ein konkreter Lösungsansatz genannt? → Nicht offen
+2. Wurde eine Maßnahme beschlossen? → Nicht offen
+3. Wurde ein Verantwortlicher benannt? → Nicht offen
+4. Wurde ein Zeitplan/Prozess definiert? → Nicht offen
+5. NUR wenn NICHTS davon zutrifft → Offene Frage
+
 Transkript:
 {transcript}
 
 **1. Explizite offene Fragen:**
-- Direkte Fragen die nicht beantwortet wurden
+- Direkte Fragen die NICHT beantwortet wurden
 - "Noch zu klären", "Später besprechen"
-- Unsicherheiten ("Wir müssen noch herausfinden...")
+- KEINE Fragen zu denen Maßnahmen besprochen wurden!
 
-**2. IMPLIZITE offene Fragen (WICHTIG!):**
-Erkenne fehlende Informationen und formuliere sie als Fragen:
-
-- Mengenangaben ohne Einheit: "12 Stück Rinderfilet" → "Wieviel KG/Gramm pro Stück?"
-- Produkte ohne Lieferant: → "Von welchem Lieferanten bestellen?"
-- Preise nicht genannt: → "Was kostet das? Wie hoch ist das Budget?"
-- Qualität nicht spezifiziert: → "Welche Qualität/Sorte?"
-- Termine ungenau: → "Wann genau? Bis wann wird es benötigt?"
-- Verantwortliche unklar: → "Wer ist verantwortlich?"
-- Mengen unklar: → "Wie viel genau wird benötigt?"
-- Lieferdetails fehlen: → "Wohin soll geliefert werden?"
+**2. IMPLIZITE offene Fragen:**
+Erkenne fehlende Informationen die NICHT im Meeting geklärt wurden:
+- Mengenangaben ohne Einheit
+- Produkte ohne Lieferant
+- Preise nicht genannt
+- Termine ungenau
+- Verantwortliche unklar
 
 Antworte mit JSON-Array:
 [
   {
-    "text": "Die Frage (klar und spezifisch formuliert)",
+    "text": "Die Frage (klar formuliert)",
     "askedBy": "Name oder null",
     "type": "explicit" | "implicit",
-    "context": "Warum diese Frage wichtig ist / was fehlt",
-    "assigneeName": "Name der Person die antworten/klären soll oder null"
+    "context": "Warum wichtig / was fehlt",
+    "assigneeName": "Name der Person die antworten soll"
   }
 ]
 
 Regeln:
-- Bei Bestellungen/Listen: Prüfe ob Menge, Einheit, Lieferant, Preis, Deadline genannt wurden
-- Fehlende Angaben → implizite Fragen erstellen
-- Auch scheinbar vollständige Angaben hinterfragen wenn unklar
+- KRITISCH: Prüfe das GESAMTE Transkript auf Lösungsansätze, Maßnahmen, Beschlüsse
+- Wenn konkrete Maßnahmen besprochen wurden → Frage ist BEANTWORTET
+- Wenn Lösungsansätze genannt wurden → Frage ist BEANTWORTET
 - assigneeName: Wenn jemand explizit die Frage beantworten soll, setze den Namen`;
 
 // Merge multiple partial summaries into one
@@ -259,6 +339,12 @@ function mergePartialSummaries(summaries: MeetingSummary[]): MeetingSummary {
   };
 }
 
+// Return type for enhanced summary including raw text for action items parsing
+export interface EnhancedSummaryResult {
+  summary: MeetingSummary;
+  rawText: string; // Raw AI response for action items parsing
+}
+
 // Generate enhanced summary
 export async function generateEnhancedSummary(
   meeting: Meeting,
@@ -266,7 +352,7 @@ export async function generateEnhancedSummary(
   settings: Settings,
   onProgress?: (progress: string) => void,
   projectContext?: ProjectContext | null
-): Promise<MeetingSummary> {
+): Promise<EnhancedSummaryResult> {
   if (!meeting.transcript) {
     throw new Error('No transcript available');
   }
@@ -329,7 +415,10 @@ export async function generateEnhancedSummary(
       300000 // 5 minutes timeout
     );
 
-    return parseEnhancedSummary(fullText);
+    return {
+      summary: parseEnhancedSummary(fullText),
+      rawText: fullText,
+    };
   }
 
   // Large transcript - use chunking
@@ -338,6 +427,7 @@ export async function generateEnhancedSummary(
   console.log(`Summary: Split into ${chunks.length} chunks`);
 
   const partialSummaries: MeetingSummary[] = [];
+  const rawTexts: string[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
     onProgress?.(`Generiere Zusammenfassung (Teil ${i + 1}/${chunks.length})...`);
@@ -362,11 +452,15 @@ export async function generateEnhancedSummary(
 
     const partialSummary = parseEnhancedSummary(chunkText);
     partialSummaries.push(partialSummary);
+    rawTexts.push(chunkText);
   }
 
   // Merge all partial summaries
   onProgress?.('Kombiniere Ergebnisse...');
-  return mergePartialSummaries(partialSummaries);
+  return {
+    summary: mergePartialSummaries(partialSummaries),
+    rawText: rawTexts.join('\n\n'), // Combine all raw texts for action items parsing
+  };
 }
 
 // Helper to validate decision status in summary parsing
@@ -402,14 +496,27 @@ function extractJsonObject(response: string): string | null {
 
 // Parse enhanced summary response
 function parseEnhancedSummary(response: string): MeetingSummary {
+  console.log('[DEBUG] parseEnhancedSummary input:', response.substring(0, 500));
+
   try {
     const jsonStr = extractJsonObject(response);
+    console.log('[DEBUG] extractJsonObject result:', jsonStr ? 'found' : 'NOT FOUND');
+
     if (!jsonStr) {
       console.error('No JSON object found in summary response');
       throw new Error('No JSON object found');
     }
 
     const parsed = JSON.parse(jsonStr);
+
+    console.log('[DEBUG] parsed JSON:', {
+      hasDecisions: Array.isArray(parsed.decisions),
+      decisionsCount: Array.isArray(parsed.decisions) ? parsed.decisions.length : 0,
+      hasOpenQuestions: Array.isArray(parsed.openQuestions),
+      openQuestionsCount: Array.isArray(parsed.openQuestions) ? parsed.openQuestions.length : 0,
+      hasNextSteps: Array.isArray(parsed.nextSteps),
+      nextStepsCount: Array.isArray(parsed.nextSteps) ? parsed.nextSteps.length : 0,
+    });
 
     return {
       overview: String(parsed.overview || ''),
@@ -440,6 +547,15 @@ function parseEnhancedSummary(response: string): MeetingSummary {
             type: validateSummaryQuestionType(q.type),
             context: q.context ? String(q.context) : undefined,
             assigneeName: q.assigneeName ? String(q.assigneeName) : undefined,
+          }))
+        : [],
+      // Parse nextSteps from AI response as actionItems
+      actionItems: Array.isArray(parsed.nextSteps)
+        ? parsed.nextSteps.map((step: string) => ({
+            id: uuidv4(),
+            text: String(step),
+            assigneeName: undefined,
+            timestamp: Date.now(),
           }))
         : [],
       generatedAt: new Date(),
@@ -666,6 +782,104 @@ function parseQuestions(response: string): MeetingQuestion[] {
   }
 }
 
+// Extract tasks from MeetingSummary decisions (pending decisions with suggestedAction become tasks)
+function extractTasksFromSummaryDecisions(summary: MeetingSummary): ExtractedTask[] {
+  const tasks: ExtractedTask[] = [];
+
+  for (const decision of summary.decisions) {
+    // Pending decisions with suggestedAction are essentially tasks
+    if (decision.status === 'pending' && decision.suggestedAction) {
+      tasks.push({
+        title: decision.suggestedAction,
+        assigneeName: decision.assigneeName,
+        priority: 'medium',
+        sourceText: decision.text,
+        confidence: 0.85,
+        type: 'implicit', // Inferred from pending decision
+      });
+    }
+  }
+
+  // Also extract tasks from open questions that need action
+  for (const question of summary.openQuestions) {
+    // Questions with assignees are essentially tasks to answer/resolve
+    if (question.assigneeName && question.type === 'implicit') {
+      tasks.push({
+        title: `Klären: ${question.text}`,
+        assigneeName: question.assigneeName,
+        priority: 'medium',
+        sourceText: question.text,
+        confidence: 0.75,
+        type: 'implicit',
+      });
+    }
+  }
+
+  return tasks;
+}
+
+// Parse action items from generated summary text and convert to ExtractedTask[]
+// This ensures tasks mentioned in the summary's "Action Items" section are captured
+export function parseActionItemsFromSummary(summaryText: string): ExtractedTask[] {
+  const tasks: ExtractedTask[] = [];
+  const lines = summaryText.split('\n');
+  let inActionItems = false;
+
+  for (const line of lines) {
+    // Check for action items section headers (German and English)
+    if (
+      line.includes('## Action Items') ||
+      line.includes('## Aufgaben') ||
+      line.includes('## Nächste Schritte') ||
+      line.includes('## Next Steps')
+    ) {
+      inActionItems = true;
+      continue;
+    }
+
+    // Exit when reaching next section
+    if (line.startsWith('## ') && inActionItems) {
+      break;
+    }
+
+    // Parse task lines (checkbox format or bullet points)
+    if (inActionItems && (line.trim().startsWith('- [ ]') || line.trim().startsWith('- '))) {
+      // Remove checkbox or bullet prefix
+      let taskText = line.trim()
+        .replace(/^- \[ \]/, '')
+        .replace(/^- /, '')
+        .trim();
+
+      if (!taskText) continue;
+
+      // Parse: "Task text (Verantwortlich: Name)" or "Task text (@Name)"
+      // Also handles: "Task text (Assignee: Name)" for English
+      const assigneeMatch = taskText.match(
+        /(.+?)(?:\s*\((?:Verantwortlich|Assignee|Zuständig):\s*(.+?)\)|\s*\(@(.+?)\))?\s*$/i
+      );
+
+      if (assigneeMatch) {
+        const title = assigneeMatch[1].trim();
+        const assignee = (assigneeMatch[2] || assigneeMatch[3])?.trim();
+
+        // Skip if title is too short or just punctuation
+        if (title.length < 3) continue;
+
+        tasks.push({
+          title,
+          assigneeName: assignee,
+          priority: 'medium', // Default priority for action items
+          sourceText: line.trim(),
+          confidence: 0.9, // High confidence since it's from the structured summary
+          type: 'explicit', // Explicitly mentioned in summary
+        });
+      }
+    }
+  }
+
+  return tasks;
+}
+
 // Full post-meeting processing
 export interface PostMeetingResult {
   summary: MeetingSummary;
@@ -695,7 +909,12 @@ export async function processPostMeeting(
 
   // Stage 1: Generate summary (with project context if available)
   onProgress?.('Generiere Zusammenfassung...', 0.2);
-  const summary = await generateEnhancedSummary(meeting, speakers, settings, undefined, projectContext);
+  const { summary, rawText } = await generateEnhancedSummary(meeting, speakers, settings, undefined, projectContext);
+
+  console.log('[DEBUG] Stage 1 complete:', {
+    hasActionItems: (summary.actionItems || []).length,
+    rawTextLength: rawText.length
+  });
 
   // Stage 2: Extract additional decisions (if not enough in summary)
   onProgress?.('Extrahiere Entscheidungen...', 0.5);
@@ -734,13 +953,89 @@ export async function processPostMeeting(
   // Stage 4: Extract tasks (with project context if available)
   onProgress?.('Extrahiere Aufgaben...', 0.9);
   const { extractTasksFromTranscript } = await import('@/lib/tasks/extractor');
-  const { tasks } = await extractTasksFromTranscript(meeting.transcript.fullText, settings, projectContext);
+  const { tasks: transcriptTasks } = await extractTasksFromTranscript(meeting.transcript.fullText, settings, projectContext);
+
+  console.log('[DEBUG] Stage 4 complete:', {
+    transcriptTasks: transcriptTasks.length
+  });
+
+  // Stage 5: Extract tasks from summary (pending decisions + open questions with assignees)
+  // This ensures action items mentioned in the summary are captured as tasks
+  const summaryTasks = extractTasksFromSummaryDecisions(summary);
+
+  // Stage 6: Parse action items from raw AI response text
+  // This captures action items that may be in markdown format in the AI response
+  const actionItemTasks = parseActionItemsFromSummary(rawText);
+
+  // Stage 7: Convert summary.actionItems (from parsed nextSteps) to ExtractedTask[]
+  const summaryActionItemTasks: ExtractedTask[] = (summary.actionItems || []).map(item => ({
+    title: item.text,
+    assigneeName: item.assigneeName,
+    priority: 'medium' as const,
+    sourceText: item.text,
+    confidence: 0.9,
+    type: 'explicit' as const,
+  }));
+
+  // Combine tasks from transcript, summary decisions, and action items, deduplicating by title prefix
+  const seenTaskPrefixes = new Set<string>();
+  const allTasks: ExtractedTask[] = [];
+
+  // Add transcript tasks first (higher priority)
+  for (const task of transcriptTasks) {
+    const prefix = task.title.toLowerCase().slice(0, 25);
+    if (!seenTaskPrefixes.has(prefix)) {
+      seenTaskPrefixes.add(prefix);
+      allTasks.push(task);
+    }
+  }
+
+  // Add summary tasks from decisions (avoid duplicates)
+  for (const task of summaryTasks) {
+    const prefix = task.title.toLowerCase().slice(0, 25);
+    if (!seenTaskPrefixes.has(prefix)) {
+      seenTaskPrefixes.add(prefix);
+      allTasks.push(task);
+    }
+  }
+
+  // Add action item tasks from raw text (avoid duplicates)
+  for (const task of actionItemTasks) {
+    const prefix = task.title.toLowerCase().slice(0, 25);
+    if (!seenTaskPrefixes.has(prefix)) {
+      seenTaskPrefixes.add(prefix);
+      allTasks.push(task);
+    }
+  }
+
+  // Add action items from parsed summary nextSteps (avoid duplicates)
+  for (const task of summaryActionItemTasks) {
+    const prefix = task.title.toLowerCase().slice(0, 25);
+    if (!seenTaskPrefixes.has(prefix)) {
+      seenTaskPrefixes.add(prefix);
+      allTasks.push(task);
+    }
+  }
+
+  console.log('[DEBUG] All stages complete:', {
+    transcriptTasks: transcriptTasks.length,
+    summaryTasks: summaryTasks.length,
+    actionItemTasks: actionItemTasks.length,
+    summaryActionItemTasks: summaryActionItemTasks.length,
+    totalAllTasks: allTasks.length
+  });
+
+  // Stage 8: Apply semantic deduplication as final safety net
+  // This catches duplicates that prefix-matching missed (e.g., "Arbeitsgruppe einrichten" vs "Bildung der Arbeitsgruppe")
+  const deduplicatedTasks = deduplicateTasksSemantically(allTasks);
+
+  console.log(`Post-Meeting: Extracted ${transcriptTasks.length} tasks from transcript, ${summaryTasks.length} from summary decisions, ${actionItemTasks.length} from raw action items, ${summaryActionItemTasks.length} from nextSteps, ${allTasks.length} after prefix dedup, ${deduplicatedTasks.length} after semantic dedup`);
 
   onProgress?.('Fertig!', 1.0);
 
   return {
     summary,
-    tasks,
+    tasks: deduplicatedTasks,
     processingTime: Date.now() - startTime,
   };
 }

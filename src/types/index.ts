@@ -133,6 +133,16 @@ Transkript:`,
     description: 'Zusammenfassung, Action Items, Entscheidungen',
     prompt: `Du bist ein Meeting-Protokoll-Assistent. Erstelle aus der folgenden Aufnahme eine strukturierte Meeting-Zusammenfassung.
 
+WICHTIG für Entscheidungen:
+- NUR explizit getroffene Entscheidungen aufnehmen ("Wir haben beschlossen...", "Es wurde entschieden...", "Abgemacht.")
+- Diskussionen, Ideen oder Vorschläge sind KEINE Entscheidungen
+- Wenn keine expliziten Entscheidungen getroffen wurden, schreibe "Keine formalen Entscheidungen getroffen"
+
+WICHTIG für Offene Fragen:
+- Fragen auflisten, die gestellt aber NICHT vollständig beantwortet wurden
+- Auch teilweise diskutierte Fragen aufnehmen, wenn keine klare Lösung gefunden wurde
+- Rhetorische Fragen ausschließen
+
 Formatiere die Ausgabe so:
 ## Zusammenfassung
 (2-3 Sätze Überblick)
@@ -142,14 +152,15 @@ Formatiere die Ausgabe so:
 - Punkt 2
 
 ## Action Items
-- [ ] Aufgabe 1 (Verantwortlich: Name)
+- [ ] Aufgabe 1 (Verantwortlich: Name, falls explizit genannt)
 - [ ] Aufgabe 2
 
 ## Entscheidungen
+(Nur explizit getroffene Beschlüsse, keine Diskussionspunkte)
 - Entscheidung 1
-- Entscheidung 2
 
 ## Offene Fragen
+(Nur unbeantwortete Fragen aus dem Meeting)
 - Frage 1
 
 Transkript:`,
