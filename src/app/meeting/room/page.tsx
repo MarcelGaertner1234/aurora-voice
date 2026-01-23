@@ -239,6 +239,12 @@ function MeetingRoomContent() {
   const [selectedContextItem, setSelectedContextItem] = useState<SelectedContextItem | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
+  // Transcript view mode state (default: fullText for readability)
+  const [showSegments, setShowSegments] = useState(false);
+
+  // Regenerate summary state
+  const [isRegeneratingSummary, setIsRegeneratingSummary] = useState(false);
+
   // Reset editing state when switching tabs to prevent data corruption
   useEffect(() => {
     setEditingTaskNotes(null);
@@ -835,6 +841,7 @@ function MeetingRoomContent() {
   // Process new recording
   const processRecording = useCallback(
     async (audioBlob: Blob) => {
+      console.log('[DEBUG] processRecording CALLED');
       if (!meetingId) return;
 
       try {
@@ -873,10 +880,18 @@ function MeetingRoomContent() {
         setIsStreaming(true);
 
         await endMeeting(meetingId);
+        console.log('[DEBUG] endMeeting completed');
+
         await setCurrentMeeting(meetingId);
+        console.log('[DEBUG] setCurrentMeeting completed');
 
         // Post-Processing with correct AI extraction
         const updatedMeeting = useMeetingStore.getState().currentMeeting;
+        console.log('[DEBUG] Before processPostMeeting:', {
+          hasUpdatedMeeting: !!updatedMeeting,
+          meetingId: updatedMeeting?.id,
+          hasTranscript: !!updatedMeeting?.transcript
+        });
         if (updatedMeeting) {
           const postResult = await processPostMeeting(
             updatedMeeting,
@@ -888,6 +903,11 @@ function MeetingRoomContent() {
             },
             projectContext
           );
+
+          console.log('[DEBUG] postResult:', {
+            tasksCount: postResult.tasks.length,
+            taskTitles: postResult.tasks.map(t => t.title)
+          });
 
           setIsStreaming(false);
           setRecordingState('idle');
@@ -905,6 +925,7 @@ function MeetingRoomContent() {
               priority: t.priority,
               sourceText: t.sourceText,
             })), updatedMeetingForTasks ?? undefined);
+            console.log('[DEBUG] Tasks created, reloading...');
           }
         } else {
           setIsStreaming(false);
@@ -922,6 +943,7 @@ function MeetingRoomContent() {
         const recordings = await loadRecordings(meetingId);
         setMeetingRecordings(recordings);
       } catch (err) {
+        console.error('[DEBUG] processRecording ERROR:', err);
         const message = err instanceof Error ? err.message : 'Processing failed';
         setError(message);
         setRecordingState('idle');
@@ -956,6 +978,53 @@ function MeetingRoomContent() {
       processRecording(blob);
     }
   }, [toggleRecording, processRecording]);
+
+  // Handle regenerate summary
+  const handleRegenerateSummary = useCallback(async () => {
+    if (!meetingId || !currentMeeting) return;
+
+    try {
+      setIsRegeneratingSummary(true);
+      setError(null);
+
+      const postResult = await processPostMeeting(
+        currentMeeting,
+        speakers,
+        settings,
+        (stage, progress) => {
+          console.log(`[Regenerate] ${stage} (${Math.round(progress * 100)}%)`);
+        },
+        projectContext
+      );
+
+      // Replace summary completely (not merge)
+      await setSummary(meetingId, postResult.summary);
+
+      // Create tasks if available
+      if (postResult.tasks.length > 0) {
+        const updatedMeetingForTasks = useMeetingStore.getState().currentMeeting;
+        await createTasks(postResult.tasks.map(t => ({
+          meetingId,
+          title: t.title,
+          assigneeName: t.assigneeName,
+          priority: t.priority,
+          sourceText: t.sourceText,
+        })), updatedMeetingForTasks ?? undefined);
+      }
+
+      // Reload meeting data
+      await setCurrentMeeting(meetingId);
+
+      // Reload tasks for this meeting
+      const tasks = await loadTasksForMeeting(meetingId);
+      setMeetingTasks(tasks);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Regeneration failed';
+      setError(message);
+    } finally {
+      setIsRegeneratingSummary(false);
+    }
+  }, [meetingId, currentMeeting, speakers, settings, projectContext, setSummary, createTasks, setCurrentMeeting, loadTasksForMeeting, setError]);
 
   // Copy to clipboard (Fix 8: Validate content before copying)
   const copyToClipboard = useCallback(async (text: string) => {
@@ -1017,7 +1086,11 @@ _Erstellt mit Aurora Voice_`;
     if (!currentMeeting) return;
 
     // Fix 8: Check if there's meaningful content to download
-    const hasTranscript = currentMeeting.transcript?.fullText && currentMeeting.transcript.fullText.trim() !== '';
+    // Also check for segments, not just fullText (segments may exist without fullText)
+    const hasTranscript = (currentMeeting.transcript?.segments &&
+                          currentMeeting.transcript.segments.length > 0) ||
+                         (currentMeeting.transcript?.fullText &&
+                          currentMeeting.transcript.fullText.trim() !== '');
     const summary = currentMeeting.summary;
     const hasSummary = Boolean(
       summary && (
@@ -1570,35 +1643,51 @@ _Erstellt mit Aurora Voice_`;
               defaultOpen={true}
             >
               {currentMeeting.transcript ? (
-                <div className="space-y-4">
-                  {/* Deduplicate segments by ID to prevent React key errors */}
-                  {currentMeeting.transcript.segments
-                    .filter((segment, index, self) =>
-                      index === self.findIndex(s => s.id === segment.id)
-                    )
-                    .map((segment, index) => (
-                    <div
-                      key={segment.id || `segment-${index}`}
-                      className="rounded-lg bg-background p-3"
-                    >
-                      <div className="mb-1 flex items-center gap-2 text-xs text-foreground-secondary">
-                        <span>
-                          {formatAbsoluteTimestamp(new Date(currentMeeting.createdAt), segment.startTime)}
-                        </span>
-                        {segment.speakerId && (
-                          <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
-                            {segment.speakerId}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-sm text-foreground">{segment.text}</p>
+                <div className="space-y-3">
+                  {/* Toggle Button */}
+                  {currentMeeting.transcript.segments.length > 0 && (
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => setShowSegments(prev => !prev)}
+                        className="text-xs text-foreground-secondary hover:text-foreground transition-colors"
+                      >
+                        {showSegments ? 'Zusammenhängend anzeigen' : 'Mit Zeitstempeln anzeigen'}
+                      </button>
                     </div>
-                  ))}
+                  )}
 
-                  {/* Full text fallback if no segments */}
-                  {currentMeeting.transcript.segments.length === 0 && currentMeeting.transcript.fullText && (
+                  {/* Transcript Content */}
+                  {showSegments ? (
+                    // Segment view with timestamps
+                    <div className="space-y-4">
+                      {currentMeeting.transcript.segments
+                        .filter((segment, index, self) =>
+                          index === self.findIndex(s => s.id === segment.id)
+                        )
+                        .map((segment, index) => (
+                        <div
+                          key={segment.id || `segment-${index}`}
+                          className="rounded-lg bg-background p-3"
+                        >
+                          <div className="mb-1 flex items-center gap-2 text-xs text-foreground-secondary">
+                            <span>
+                              {formatAbsoluteTimestamp(new Date(currentMeeting.createdAt), segment.startTime)}
+                            </span>
+                            {segment.speakerId && (
+                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                                {segment.speakerId}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm text-foreground">{segment.text}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    // Continuous text view (default)
                     <p className="text-sm text-foreground leading-relaxed">
-                      {currentMeeting.transcript.fullText}
+                      {currentMeeting.transcript.fullText ||
+                       currentMeeting.transcript.segments.map(s => s.text).join(' ')}
                     </p>
                   )}
                 </div>
@@ -1949,6 +2038,34 @@ _Erstellt mit Aurora Voice_`;
                 </p>
               )}
             </CollapsibleSection>
+
+            {/* AI Re-Analysis Button */}
+            {currentMeeting.transcript && (
+              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-sm font-medium text-foreground">KI-Analyse</h3>
+                    <p className="text-xs text-foreground-secondary mt-0.5">
+                      Extrahiert Entscheidungen, offene Fragen und Aufgaben aus dem Transkript
+                    </p>
+                    <button
+                      onClick={handleRegenerateSummary}
+                      disabled={isRegeneratingSummary || !settings.openaiApiKey}
+                      className="mt-3 w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isRegeneratingSummary ? 'animate-spin' : ''}`} />
+                      {isRegeneratingSummary ? 'Analysiere...' : 'Neu analysieren'}
+                    </button>
+                    {!settings.openaiApiKey && (
+                      <p className="mt-2 text-xs text-warning text-center">API Key erforderlich</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Decisions */}
             <CollapsibleSection
