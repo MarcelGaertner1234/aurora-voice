@@ -13,10 +13,7 @@ export function ApiKeyLoader({ children }: { children: React.ReactNode }) {
     }
   }, [loadApiKeys, apiKeysLoaded]);
 
-  // BLOCK RENDERING until API keys are loaded
-  if (!apiKeysLoaded) {
-    return null; // Children won't render until keys are ready
-  }
-
+  // Always render children to allow Next.js Router to initialize
+  // Components that need API keys can check apiKeysLoaded state themselves
   return <>{children}</>;
 }
