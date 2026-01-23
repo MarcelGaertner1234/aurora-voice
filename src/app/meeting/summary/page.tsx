@@ -19,6 +19,7 @@ import {
   ListChecks,
   AlertCircle,
   BarChart3,
+  RefreshCw,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store/settings';
 import { useMeetingStore } from '@/lib/store/meeting-store';
@@ -319,7 +320,10 @@ function SummaryContent() {
   }
 
   const hasSummary = currentMeeting.summary;
-  const hasTranscript = currentMeeting.transcript;
+  const hasTranscript = (currentMeeting.transcript?.segments &&
+                        currentMeeting.transcript.segments.length > 0) ||
+                       (currentMeeting.transcript?.fullText &&
+                        currentMeeting.transcript.fullText.trim() !== '');
 
   return (
     <div className="min-h-screen bg-background">
@@ -417,6 +421,20 @@ function SummaryContent() {
               )}
             </div>
           </GlassCard>
+        )}
+
+        {/* Regenerate Summary Button */}
+        {hasSummary && hasTranscript && !isProcessing && (
+          <div className="flex justify-end mb-4">
+            <button
+              onClick={handleProcessMeeting}
+              disabled={!settings.openaiApiKey || isProcessing}
+              className="inline-flex items-center gap-2 rounded-full bg-primary/10 px-4 py-2 text-sm text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Summary neu generieren
+            </button>
+          </div>
         )}
 
         {/* Metrics */}
