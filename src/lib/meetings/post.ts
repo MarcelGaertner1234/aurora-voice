@@ -1111,6 +1111,41 @@ Formatiere die E-Mail direkt ohne zusätzliche Erklärungen.`;
   return fullText;
 }
 
+// Index meeting for semantic search (cross-meeting intelligence)
+export async function indexMeetingForSearch(
+  meeting: Meeting,
+  settings: Settings
+): Promise<{ success: boolean; vectorsCreated: number; error?: string }> {
+  // Skip if no summary
+  if (!meeting.summary) {
+    return { success: false, vectorsCreated: 0, error: 'No summary available' };
+  }
+
+  try {
+    const { indexMeeting } = await import('@/lib/search/semantic-search');
+
+    const config = {
+      provider: settings.selectedProvider === 'ollama' ? 'ollama' as const : 'openai' as const,
+      apiKey: settings.openaiApiKey,
+      baseUrl: settings.ollamaBaseUrl,
+    };
+
+    const result = await indexMeeting(meeting, config);
+    return {
+      success: !result.error,
+      vectorsCreated: result.vectorsCreated,
+      error: result.error,
+    };
+  } catch (err) {
+    console.error('Failed to index meeting for search:', err);
+    return {
+      success: false,
+      vectorsCreated: 0,
+      error: err instanceof Error ? err.message : 'Unknown error',
+    };
+  }
+}
+
 // Calculate meeting metrics
 export interface MeetingMetrics {
   totalDuration: number; // ms

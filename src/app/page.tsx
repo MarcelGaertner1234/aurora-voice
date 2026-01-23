@@ -17,6 +17,8 @@ import { ParticipantSelector } from '@/components/ui/participant-selector';
 import { SettingsPanel } from '@/components/ui/settings-panel';
 import { StreamingText } from '@/components/output/streaming-text';
 import { saveSimpleToObsidian } from '@/lib/export/obsidian';
+import { PrivacyBadge } from '@/components/privacy/PrivacyBadge';
+import { SearchPanel, SearchTrigger } from '@/components/search/SearchPanel';
 
 export default function Home() {
   const router = useRouter();
@@ -105,6 +107,19 @@ export default function Home() {
   }, [liveTranscriptError, setError]);
   const [copied, setCopied] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  // Keyboard shortcut for search (Cmd/Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsSearchOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
   const [savedToObsidian, setSavedToObsidian] = useState(false);
   const [isSavingToObsidian, setIsSavingToObsidian] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false); // Fix 1: Prevent race condition
@@ -502,9 +517,14 @@ export default function Home() {
       <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-foreground/5 bg-background/80 px-4 backdrop-blur-xl">
         <h1 className="text-sm font-medium text-foreground">Voice Mode</h1>
         <div className="flex items-center gap-2">
+          <SearchTrigger onClick={() => setIsSearchOpen(true)} />
+          <PrivacyBadge />
           <SettingsPanel />
         </div>
       </header>
+
+      {/* Search Panel */}
+      <SearchPanel isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
 
       <main className="container mx-auto max-w-2xl px-4 py-8">
         {/* Error Alert */}
