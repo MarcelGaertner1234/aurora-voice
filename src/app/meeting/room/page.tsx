@@ -54,6 +54,7 @@ import { useTaskStore } from '@/lib/store/task-store';
 import { useAppStore } from '@/lib/store/settings';
 import type { Task, TaskAttachment } from '@/types/task';
 import { useRecorder } from '@/hooks/use-recorder';
+import { useLiveTranscript } from '@/hooks/use-live-transcript';
 import { transcribeAudioWithChunking } from '@/lib/ai/transcribe';
 import { processPostMeeting } from '@/lib/meetings/post';
 import { formatAbsoluteTimestamp } from '@/lib/meetings/engine';
@@ -192,6 +193,35 @@ function MeetingRoomContent() {
 
   const { loadTasksForMeeting, setTaskStatus, updateTaskNotes, updateTask, addTaskAttachment, removeTaskAttachment } = useTaskStore();
   const { toggleRecording } = useRecorder();
+
+  // Follow-up Live Transcript Hook
+  const {
+    isRecording: isFollowUpRecording,
+    segments: followUpSegments,
+    audioLevel: followUpAudioLevel,
+    isSpeaking: followUpIsSpeaking,
+    pendingChunks: followUpPendingChunks,
+    start: startFollowUpTranscript,
+    stop: stopFollowUpTranscript,
+    reset: resetFollowUpTranscript,
+  } = useLiveTranscript({
+    apiKey: settings.openaiApiKey,
+    language: settings.language,
+    chunkDuration: 5000,
+    useSmartChunking: true,
+    onSegment: async (segment) => {
+      // Segment sofort zum Meeting hinzufügen
+      await addTranscriptSegment(segment);
+      addTranscriptionUsage((segment.endTime - segment.startTime) / 1000);
+    },
+    onError: (error) => {
+      setError(error.message);
+    },
+  });
+
+  // Follow-up recording state for AnimatedOrb
+  const [followUpRecordingState, setFollowUpRecordingState] = useState<'idle' | 'recording' | 'processing'>('idle');
+
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -971,13 +1001,109 @@ function MeetingRoomContent() {
     ]
   );
 
-  // Handle follow-up recording
+  // Handle follow-up recording with live transcription
   const handleFollowUpRecording = useCallback(async () => {
-    const blob = await toggleRecording();
-    if (blob) {
-      processRecording(blob);
+    if (!meetingId) return;
+
+    if (isFollowUpRecording) {
+      // Stop: Aufnahme beenden
+      setFollowUpRecordingState('processing');
+
+      // Stop und Audio-Blob bekommen
+      const result = await stopFollowUpTranscript();
+
+      // Audio speichern
+      if (result?.audioBlob) {
+        await addRecording(
+          meetingId,
+          result.audioBlob,
+          result.audioMimeType || 'audio/webm',
+          result.audioDuration || 0
+        );
+
+        // Recordings neu laden
+        const recordings = await loadRecordings(meetingId);
+        setMeetingRecordings(recordings);
+      }
+
+      // Post-Processing: Reload meeting to include new segments
+      await setCurrentMeeting(meetingId);
+
+      // Post-Processing with AI analysis if there are new segments
+      const updatedMeeting = useMeetingStore.getState().currentMeeting;
+      if (updatedMeeting && followUpSegments.length > 0) {
+        try {
+          setIsStreaming(true);
+          setEnrichedContent('');
+
+          const postResult = await processPostMeeting(
+            updatedMeeting,
+            speakers,
+            settings,
+            (stage, progress) => {
+              appendEnrichedContent(`${stage}\n`);
+            },
+            projectContext
+          );
+
+          // Merge summary (accumulates decisions, questions from follow-up recordings)
+          await mergeSummary(meetingId, postResult.summary);
+
+          // Create tasks if available
+          if (postResult.tasks.length > 0) {
+            const updatedMeetingForTasks = useMeetingStore.getState().currentMeeting;
+            await createTasks(postResult.tasks.map(t => ({
+              meetingId,
+              title: t.title,
+              assigneeName: t.assigneeName,
+              priority: t.priority,
+              sourceText: t.sourceText,
+            })), updatedMeetingForTasks ?? undefined);
+          }
+
+          // Reload meeting data
+          await setCurrentMeeting(meetingId);
+
+          // Reload tasks for this meeting
+          const tasks = await loadTasksForMeeting(meetingId);
+          setMeetingTasks(tasks);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Processing failed';
+          setError(message);
+        } finally {
+          setIsStreaming(false);
+        }
+      }
+
+      // Reset follow-up state
+      resetFollowUpTranscript();
+      setFollowUpRecordingState('idle');
+    } else {
+      // Start: Aufnahme starten
+      setFollowUpRecordingState('recording');
+      await startFollowUpTranscript();
     }
-  }, [toggleRecording, processRecording]);
+  }, [
+    isFollowUpRecording,
+    startFollowUpTranscript,
+    stopFollowUpTranscript,
+    resetFollowUpTranscript,
+    meetingId,
+    followUpSegments.length,
+    speakers,
+    settings,
+    projectContext,
+    setCurrentMeeting,
+    mergeSummary,
+    createTasks,
+    loadTasksForMeeting,
+    setError,
+    setIsStreaming,
+    setEnrichedContent,
+    appendEnrichedContent,
+    addRecording,
+    loadRecordings,
+  ]);
 
   // Handle regenerate summary
   const handleRegenerateSummary = useCallback(async () => {
@@ -1614,22 +1740,44 @@ _Erstellt mit Aurora Voice_`;
                 <div>
                   <h2 className="font-medium text-foreground">Follow-up Aufnahme</h2>
                   <p className="mt-1 text-sm text-foreground-secondary">
-                    Füge eine neue Aufnahme zu diesem Meeting hinzu
+                    {isFollowUpRecording
+                      ? 'Live-Transkription läuft...'
+                      : 'Füge eine neue Aufnahme zu diesem Meeting hinzu'}
                   </p>
                 </div>
                 <div className="flex items-center gap-4">
+                  {/* Pending Chunks Indicator */}
+                  {followUpPendingChunks > 0 && (
+                    <span className="text-xs text-foreground-secondary animate-pulse">
+                      {followUpPendingChunks} {followUpPendingChunks === 1 ? 'Chunk' : 'Chunks'}...
+                    </span>
+                  )}
                   <AnimatedOrb
-                    state={recordingState}
-                    audioLevel={audioLevel}
+                    state={followUpRecordingState}
+                    audioLevel={followUpAudioLevel}
                     onClick={handleFollowUpRecording}
-                    disabled={isProcessing || !settings.openaiApiKey}
+                    disabled={followUpRecordingState === 'processing' || !settings.openaiApiKey}
                     size="sm"
                   />
                 </div>
               </div>
 
-              {/* Show streaming content during processing */}
-              {(isStreaming || enrichedContent) && recordingState !== 'idle' && (
+              {/* Live-Transkript während Aufnahme */}
+              {isFollowUpRecording && followUpSegments.length > 0 && (
+                <div className="mt-4 border-t border-foreground/5 pt-4">
+                  <p className="text-xs text-foreground-secondary mb-2">Live-Transkript:</p>
+                  <div className="max-h-48 overflow-y-auto space-y-2 rounded-lg bg-background p-3">
+                    {followUpSegments.map((seg, i) => (
+                      <p key={seg.id || i} className="text-sm text-foreground">
+                        {seg.text}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Show streaming content during AI processing */}
+              {(isStreaming || enrichedContent) && followUpRecordingState === 'processing' && (
                 <div className="mt-4 border-t border-foreground/5 pt-4">
                   <StreamingText content={enrichedContent} isStreaming={isStreaming} />
                 </div>
