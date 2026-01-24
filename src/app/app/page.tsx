@@ -19,6 +19,7 @@ import { StreamingText } from '@/components/output/streaming-text';
 import { saveSimpleToObsidian } from '@/lib/export/obsidian';
 import { PrivacyBadge } from '@/components/privacy/PrivacyBadge';
 import { SearchPanel, SearchTrigger } from '@/components/search/SearchPanel';
+import { OnboardingModal } from '@/components/onboarding/onboarding-modal';
 
 export default function Home() {
   const router = useRouter();
@@ -513,6 +514,9 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Onboarding Modal */}
+      <OnboardingModal />
+
       {/* Header */}
       <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-foreground/5 bg-background/80 px-4 backdrop-blur-xl">
         <h1 className="text-sm font-medium text-foreground">Voice Mode</h1>

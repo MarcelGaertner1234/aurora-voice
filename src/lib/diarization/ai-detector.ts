@@ -166,8 +166,6 @@ export function splitTextByChanges(
   const words = text.split(/\s+/);
   const segments: { text: string; speakerName: string | null; confidence: number }[] = [];
 
-  let currentStart = 0;
-
   for (let i = 0; i < sortedChanges.length; i++) {
     const change = sortedChanges[i];
     const nextChange = sortedChanges[i + 1];

@@ -75,7 +75,7 @@ export async function diarizeSegment(
     const estimatedDuration = wordCount * 300; // ~300ms per word average
 
     // Find speaker match
-    let speakerId: string | null = null;
+    const speakerId: string | null = null;
     let suggestedSpeakerId: string | undefined;
     let confidence = split.confidence;
 

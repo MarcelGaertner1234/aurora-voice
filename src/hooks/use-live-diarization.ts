@@ -45,7 +45,7 @@ export function useLiveDiarization(options: UseLiveDiarizationOptions) {
   const {
     speakers,
     meetingParticipantIds,
-    settings,
+    // settings is available for future use (e.g., AI-based diarization)
     enabled = true,
     confidenceThreshold = 0.6,
     debounceMs = 500,
@@ -237,11 +237,14 @@ export function useLiveDiarization(options: UseLiveDiarizationOptions) {
     setProcessedCount(0);
   }, [clearQueue]);
 
+  // Get queue length as a getter function to avoid accessing ref during render
+  const getQueueLength = useCallback(() => queueRef.current.length, []);
+
   return {
     // State
     isProcessing,
     processedCount,
-    queueLength: queueRef.current.length,
+    getQueueLength,
 
     // Actions
     processSegment,

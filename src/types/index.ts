@@ -52,6 +52,9 @@ export interface Settings {
   // Speaker auto-detection
   autoSpeakerDetection: boolean;
   speakerDetectionConfidenceThreshold: number;
+  // Onboarding
+  hasCompletedOnboarding: boolean;
+  onboardingVersion: string;
 }
 
 export interface TranscriptionResult {
@@ -103,6 +106,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Speaker auto-detection defaults
   autoSpeakerDetection: true,
   speakerDetectionConfidenceThreshold: 0.6,
+  // Onboarding defaults
+  hasCompletedOnboarding: false,
+  onboardingVersion: '1.0.0',
 };
 
 export const DEFAULT_USAGE_STATS: UsageStats = {
