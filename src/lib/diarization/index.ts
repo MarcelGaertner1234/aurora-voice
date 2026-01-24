@@ -18,6 +18,7 @@ import {
 } from './ai-detector';
 import {
   findBestMatchWithLearning,
+  matchSpeaker,
   matchSpeakers,
   recordCorrection,
   resetUnknownSpeakerCounter,
@@ -34,6 +35,7 @@ export {
   estimateSpeakerCount,
   // Re-export from speaker-matcher
   findBestMatchWithLearning,
+  matchSpeaker,
   matchSpeakers,
   recordCorrection,
   calculateSpeakingTime,

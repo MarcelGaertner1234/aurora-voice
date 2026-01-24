@@ -81,6 +81,9 @@ export function SpeakerAssignment({
 
   // If has suggestion, show confirmation UI
   if (segment.suggestedSpeakerId && !segment.confirmed) {
+    const confidencePercent = segment.confidence ? Math.round(segment.confidence * 100) : null;
+    const isHighConfidence = (segment.confidence || 0) >= 0.8;
+
     return (
       <div className="inline-flex items-center gap-1">
         <span
@@ -89,6 +92,18 @@ export function SpeakerAssignment({
         >
           <User className="h-3 w-3" />
           {displayName}?
+          {confidencePercent !== null && (
+            <span
+              className={`ml-1 px-1 py-0.5 rounded text-[10px] ${
+                isHighConfidence
+                  ? 'bg-success/20 text-success'
+                  : 'bg-foreground/10 text-foreground-secondary'
+              }`}
+              title="Erkennungs-Konfidenz"
+            >
+              {confidencePercent}%
+            </span>
+          )}
         </span>
         <button
           onClick={() => handleAssign(segment.suggestedSpeakerId!)}

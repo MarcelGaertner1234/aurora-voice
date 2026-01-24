@@ -36,6 +36,7 @@ import { useProjectStore } from '@/lib/store/project-store';
 import { findMatchingFiles } from '@/lib/project/matcher';
 import type { ProjectContext, ProjectMatch } from '@/types/project';
 import { useLiveTranscript } from '@/hooks/use-live-transcript';
+import { useLiveDiarization } from '@/hooks/use-live-diarization';
 import { GlassCard } from '@/components/ui/glass-card';
 import { SpeakerLabel } from '@/components/transcript/speaker-label';
 import { SpeakerAssignment } from '@/components/speakers/speaker-assignment';
@@ -52,7 +53,6 @@ import { processPostMeeting } from '@/lib/meetings/post';
 import {
   confirmSpeakerAssignment,
   rejectSpeakerSuggestion,
-  diarizeSegment,
 } from '@/lib/diarization';
 import { KeywordHighlight, KeywordFilterBar, KeywordLegend } from '@/components/transcript/keyword-highlight';
 import {
@@ -212,6 +212,18 @@ function LiveMeetingContent() {
   const { speakers, loadSpeakers, createSpeaker } = useSpeakerStore();
   const { getOrIndexProject, getCachedProject } = useProjectStore();
 
+  // Live Diarization (speaker detection) - must be defined before useLiveTranscript to use in callback
+  const {
+    processSegment: diarizeSegmentLive,
+    isProcessing: isDiarizing,
+  } = useLiveDiarization({
+    speakers,
+    meetingParticipantIds: currentMeeting?.participantIds,
+    settings,
+    enabled: settings.autoSpeakerDetection ?? true,
+    confidenceThreshold: settings.speakerDetectionConfidenceThreshold ?? 0.6,
+  });
+
   // Live Transcription
   const {
     isRecording: isRecorderActive,
@@ -233,9 +245,20 @@ function LiveMeetingContent() {
     language: settings.language,
     chunkDuration: 5000,
     useSmartChunking: true,
-    onSegment: (segment) => {
+    onSegment: async (segment) => {
       addTranscriptSegment(segment);
       addTranscriptionUsage((segment.endTime - segment.startTime) / 1000);
+
+      // Auto speaker detection
+      if (settings.autoSpeakerDetection ?? true) {
+        const result = await diarizeSegmentLive(segment);
+        if (result?.suggestedSpeakerId) {
+          updateTranscriptSegment(segment.id, {
+            suggestedSpeakerId: result.suggestedSpeakerId,
+            confidence: result.confidence,
+          });
+        }
+      }
     },
   });
 
@@ -691,6 +714,14 @@ function LiveMeetingContent() {
                       <span className="flex items-center gap-1.5 text-xs text-foreground-secondary">
                         <div className="h-2 w-2 animate-spin rounded-full border border-primary border-t-transparent" />
                         Transkribiere... ({pendingChunks} ausstehend)
+                      </span>
+                    )}
+
+                    {/* Speaker Detection Status */}
+                    {(settings.autoSpeakerDetection ?? true) && isDiarizing && (
+                      <span className="flex items-center gap-1.5 text-xs text-primary">
+                        <Users className="h-3.5 w-3.5 animate-pulse" />
+                        Sprecher erkennen...
                       </span>
                     )}
 

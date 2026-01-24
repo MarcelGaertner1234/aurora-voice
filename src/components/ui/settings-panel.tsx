@@ -357,6 +357,55 @@ export function SettingsPanel() {
                     </div>
                   </section>
 
+                  {/* Speaker Detection */}
+                  <section className="space-y-3">
+                    <h3 className="text-sm font-medium text-foreground-secondary">
+                      Sprecher-Erkennung
+                    </h3>
+
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <label className="text-sm">Automatische Erkennung</label>
+                        <p className="text-xs text-foreground-secondary">
+                          Erkennt Sprecher während der Aufnahme
+                        </p>
+                      </div>
+                      <Switch.Root
+                        checked={settings.autoSpeakerDetection ?? true}
+                        onCheckedChange={(checked) =>
+                          updateSettings({ autoSpeakerDetection: checked })
+                        }
+                        className="h-6 w-11 rounded-full bg-background-secondary data-[state=checked]:bg-primary"
+                      >
+                        <Switch.Thumb className="block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow-sm transition-transform data-[state=checked]:translate-x-5" />
+                      </Switch.Root>
+                    </div>
+
+                    {(settings.autoSpeakerDetection ?? true) && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs text-foreground-secondary">
+                            Konfidenz-Schwelle: {Math.round((settings.speakerDetectionConfidenceThreshold ?? 0.6) * 100)}%
+                          </label>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.4"
+                          max="0.9"
+                          step="0.05"
+                          value={settings.speakerDetectionConfidenceThreshold ?? 0.6}
+                          onChange={(e) =>
+                            updateSettings({ speakerDetectionConfidenceThreshold: parseFloat(e.target.value) })
+                          }
+                          className="w-full h-2 bg-background-secondary rounded-lg appearance-none cursor-pointer accent-primary"
+                        />
+                        <p className="text-xs text-foreground-secondary">
+                          Niedrigere Werte = mehr Vorschläge, höhere Werte = genauere Vorschläge
+                        </p>
+                      </div>
+                    )}
+                  </section>
+
                   {/* Custom Prompts */}
                   <section className="space-y-3">
                     <h3 className="text-sm font-medium text-foreground-secondary">

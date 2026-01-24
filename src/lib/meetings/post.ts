@@ -907,6 +907,35 @@ export async function processPostMeeting(
     console.warn(`WARNING: Transcript is ${(transcriptSize / 1024 / 1024).toFixed(2)} MB - unusually large!`);
   }
 
+  // Stage 0.5: Post-meeting diarization for unconfirmed segments
+  if (settings.autoSpeakerDetection && speakers.length > 0) {
+    onProgress?.('Analysiere Sprecher...', 0.1);
+    try {
+      const { diarizeTranscript } = await import('@/lib/diarization');
+      const unconfirmedSegments = meeting.transcript.segments.filter(s => !s.confirmed);
+
+      if (unconfirmedSegments.length > 0) {
+        console.log(`Post-Meeting: Diarizing ${unconfirmedSegments.length} unconfirmed segments`);
+        const diarizedSegments = await diarizeTranscript(unconfirmedSegments, speakers, settings);
+
+        // Update segments with diarization results
+        for (const diarized of diarizedSegments) {
+          const originalIndex = meeting.transcript.segments.findIndex(s => s.id === diarized.id);
+          if (originalIndex >= 0 && diarized.suggestedSpeakerId) {
+            meeting.transcript.segments[originalIndex] = {
+              ...meeting.transcript.segments[originalIndex],
+              suggestedSpeakerId: diarized.suggestedSpeakerId,
+              confidence: diarized.confidence,
+            };
+          }
+        }
+        console.log(`Post-Meeting: Diarization completed`);
+      }
+    } catch (err) {
+      console.warn('Post-Meeting: Diarization failed, continuing without speaker detection:', err);
+    }
+  }
+
   // Stage 1: Generate summary (with project context if available)
   onProgress?.('Generiere Zusammenfassung...', 0.2);
   const { summary, rawText } = await generateEnhancedSummary(meeting, speakers, settings, undefined, projectContext);

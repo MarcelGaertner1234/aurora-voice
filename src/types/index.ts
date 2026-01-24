@@ -49,6 +49,9 @@ export interface Settings {
   // Obsidian integration
   obsidianVaultPath: string | null;
   obsidianSubfolder: string;
+  // Speaker auto-detection
+  autoSpeakerDetection: boolean;
+  speakerDetectionConfidenceThreshold: number;
 }
 
 export interface TranscriptionResult {
@@ -97,6 +100,9 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   obsidianVaultPath: null,
   obsidianSubfolder: 'Aurora',
+  // Speaker auto-detection defaults
+  autoSpeakerDetection: true,
+  speakerDetectionConfidenceThreshold: 0.6,
 };
 
 export const DEFAULT_USAGE_STATS: UsageStats = {
