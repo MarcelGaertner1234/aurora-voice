@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, Suspense } from 'react';
+import { useEffect, useState, useCallback, useMemo, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -20,12 +20,15 @@ import {
   AlertCircle,
   BarChart3,
   RefreshCw,
+  Coins,
 } from 'lucide-react';
 import { useAppStore } from '@/lib/store/settings';
 import { useMeetingStore } from '@/lib/store/meeting-store';
 import { useTaskStore } from '@/lib/store/task-store';
 import { useSpeakerStore } from '@/lib/store/speaker-store';
 import { GlassCard } from '@/components/ui/glass-card';
+import { FollowUpEmailModal } from '@/components/meeting/follow-up-email-modal';
+import { QuickActionsPanel } from '@/components/meeting/quick-actions-panel';
 import {
   processPostMeeting,
   generateFollowUpEmail,
@@ -164,6 +167,7 @@ function SummaryContent() {
   const [emailDraft, setEmailDraft] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
 
   // Load data
   useEffect(() => {
@@ -193,6 +197,26 @@ function SummaryContent() {
       setMetrics(m);
     }
   }, [currentMeeting, meetingTasks]);
+
+  // Calculate meeting cost
+  const meetingCost = useMemo(() => {
+    if (!currentMeeting || !metrics) return null;
+
+    const durationHours = (metrics.totalDuration || 0) / (1000 * 60 * 60);
+    const participantCount = currentMeeting.participantIds?.length || 1;
+    const personHours = durationHours * participantCount;
+
+    // Get hourly rate from settings (0 = disabled)
+    const hourlyRate = settings.hourlyRate || 0;
+    const euroValue = personHours * hourlyRate;
+
+    return {
+      personHours: personHours.toFixed(1),
+      euroValue: hourlyRate > 0 ? euroValue.toFixed(0) : null,
+      participants: participantCount,
+      duration: formatDuration(metrics.totalDuration || 0),
+    };
+  }, [currentMeeting, metrics, settings.hourlyRate]);
 
   // Handle full post-processing
   const handleProcessMeeting = useCallback(async () => {
@@ -439,7 +463,7 @@ function SummaryContent() {
 
         {/* Metrics */}
         {metrics && (
-          <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
             <MetricCard
               icon={Clock}
               label="Dauer"
@@ -460,6 +484,18 @@ function SummaryContent() {
               label="Engagement"
               value={`${metrics.engagementScore}%`}
             />
+            {meetingCost && (
+              <MetricCard
+                icon={Coins}
+                label="Meeting-Kosten"
+                value={`${meetingCost.personHours}h`}
+                subvalue={
+                  meetingCost.euroValue
+                    ? `~${meetingCost.euroValue}€`
+                    : `${meetingCost.participants} Personen`
+                }
+              />
+            )}
           </div>
         )}
 
@@ -546,6 +582,14 @@ function SummaryContent() {
 
           {/* Sidebar */}
           <div className="space-y-6">
+            {/* Quick Actions */}
+            <QuickActionsPanel
+              meeting={currentMeeting}
+              tasks={meetingTasks}
+              onEmailClick={() => setEmailModalOpen(true)}
+              onExportClick={() => handleDownload('markdown')}
+            />
+
             {/* Tasks */}
             <GlassCard>
               <h2 className="mb-3 text-sm font-medium text-foreground-secondary uppercase tracking-wide">
@@ -631,6 +675,14 @@ function SummaryContent() {
           </div>
         </div>
       </main>
+
+      {/* Follow-Up Email Modal */}
+      <FollowUpEmailModal
+        open={emailModalOpen}
+        onOpenChange={setEmailModalOpen}
+        meeting={currentMeeting}
+        tasks={meetingTasks}
+      />
     </div>
   );
 }

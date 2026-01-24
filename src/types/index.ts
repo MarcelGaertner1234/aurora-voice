@@ -55,6 +55,8 @@ export interface Settings {
   // Onboarding
   hasCompletedOnboarding: boolean;
   onboardingVersion: string;
+  // Meeting cost calculator
+  hourlyRate: number; // Euro per hour per person for meeting cost calculation
 }
 
 export interface TranscriptionResult {
@@ -109,6 +111,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // Onboarding defaults
   hasCompletedOnboarding: false,
   onboardingVersion: '1.0.0',
+  // Meeting cost calculator defaults
+  hourlyRate: 0, // 0 = disabled, set > 0 to show Euro value
 };
 
 export const DEFAULT_USAGE_STATS: UsageStats = {
