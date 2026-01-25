@@ -2,6 +2,7 @@ import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
   output: 'export',
+  basePath: '/aurora-voice',
   images: {
     unoptimized: true,
   },
