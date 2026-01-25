@@ -27,7 +27,7 @@ export function Footer() {
 
           <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
             <a
-              href="https://github.com/aurora-voice/aurora-voice/releases"
+              href="https://github.com/MarcelGaertner1234/aurora-voice/releases"
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-2 rounded-full bg-gradient-to-r from-primary to-secondary px-8 py-4 text-lg font-medium text-white shadow-lg transition-all hover:scale-105 hover:shadow-xl"
@@ -36,7 +36,7 @@ export function Footer() {
               Download für macOS
             </a>
             <a
-              href="https://github.com/aurora-voice/aurora-voice"
+              href="https://github.com/MarcelGaertner1234/aurora-voice"
               target="_blank"
               rel="noopener noreferrer"
               className="glass flex items-center gap-2 rounded-full px-8 py-4 text-lg font-medium transition-all hover:scale-105"
@@ -73,7 +73,7 @@ export function Footer() {
 
           <div className="flex items-center gap-6 text-sm text-foreground-secondary">
             <a
-              href="https://github.com/aurora-voice/aurora-voice"
+              href="https://github.com/MarcelGaertner1234/aurora-voice"
               target="_blank"
               rel="noopener noreferrer"
               className="transition-colors hover:text-foreground"
@@ -81,7 +81,7 @@ export function Footer() {
               GitHub
             </a>
             <a
-              href="https://github.com/aurora-voice/aurora-voice/blob/main/LICENSE"
+              href="https://github.com/MarcelGaertner1234/aurora-voice/blob/main/LICENSE"
               target="_blank"
               rel="noopener noreferrer"
               className="transition-colors hover:text-foreground"
